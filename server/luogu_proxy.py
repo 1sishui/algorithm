@@ -95,6 +95,12 @@ def fetch_records(uid, page=1, timeout=12):
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
             raw = resp.read().decode("utf-8", "ignore")
     except urllib.error.HTTPError as exc:
+        if exc.code in (301, 302, 303, 307, 308):
+            return 200, {
+                "ok": False,
+                "reason": "login_required",
+                "message": "洛谷把这个请求跳转到了登录页（302）：说明记录不公开，或者该接口需要登录态。可以开放隐私设置，或改用控制台脚本。",
+            }
         if exc.code in (403, 401):
             return 200, {
                 "ok": False,

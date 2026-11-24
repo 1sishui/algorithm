@@ -2595,7 +2595,17 @@ const BOOKMARKLET = `(async () => {
     const res = await fetch('/record/list?user=' + uid + '&page=' + page + '&_contentOnly=1', {
       headers: { 'x-luogu-type': 'content-only' }
     });
-    const json = await res.json();
+    if (!res.ok) {
+      console.error('第 ' + page + ' 页请求失败：HTTP ' + res.status + '。请先登录洛谷，再运行本脚本。');
+      break;
+    }
+    let json;
+    try {
+      json = JSON.parse(await res.text());
+    } catch (e) {
+      console.error('返回的不是 JSON（可能被跳转到登录页）。请先登录洛谷再运行。');
+      break;
+    }
     const box = (json.currentData && json.currentData.records) || json.records || json;
     const list = (box && box.result) || [];
     if (!list.length) break;
