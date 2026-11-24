@@ -98,8 +98,21 @@ def _get(url, cookie="", accept="application/json", timeout=15, ajax=True):
         raise
 
 
+_LENTILLE = re.compile(r'<script id="lentille-context" type="application/json">(.*?)</script>', re.S)
+
+
 def _extract_injection(html):
-    """从页面里抠出 _feInjection，再解出 JSON。"""
+    """新版页面把数据放在 <script id="lentille-context">，老版放在 _feInjection，两者都试。"""
+    match = _LENTILLE.search(html)
+    if match:
+        try:
+            context = json.loads(match.group(1))
+        except (ValueError, TypeError):
+            context = None
+        if isinstance(context, dict):
+            # lentille 的结构：{instance, template, status, data:{...}}
+            return {"currentData": context.get("data") or {}, "template": context.get("template")}
+
     match = _FE_INJECTION.search(html)
     if not match:
         return None
@@ -121,8 +134,19 @@ def _parse_payload(text):
 
 
 def _records_from(data):
-    box = (data.get("currentData") or {}).get("records") or data.get("records") or {}
-    return box.get("result") or [], box
+    # 兼容几种可能的结构：records.result / records(数组) / result
+    current = data.get("currentData") or {}
+    box = current.get("records") or data.get("records")
+
+    if isinstance(box, list):
+        return box, {"result": box}
+    if isinstance(box, dict):
+        return box.get("result") or [], box
+
+    direct = current.get("result") or data.get("result")
+    if isinstance(direct, list):
+        return direct, {"result": direct}
+    return [], {}
 
 
 def fetch_records_with_cookie(uid, page=1, cookie="", timeout=15):
@@ -182,7 +206,11 @@ def fetch_records_with_cookie(uid, page=1, cookie="", timeout=15):
                     "page": int(page),
                     "via": "html",
                 }
-            attempts.append("页面能打开，但里面没有记录数据")
+            keys = list((data.get("currentData") or {}).keys())[:8]
+            template = data.get("template") or "?"
+            attempts.append(
+                "页面模板 " + template + "，数据字段 " + str(keys) + "，但没有 records"
+            )
         else:
             attempts.append(f"页面没有内嵌数据（HTTP {status}，{len(text)} 字节）")
     except PermissionError as exc:
