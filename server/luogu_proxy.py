@@ -31,6 +31,46 @@ def _ssl_context():
         return ssl.create_default_context()
 
 
+def fetch_user(uid, timeout=12):
+    """取用户公开资料（昵称、头像），用来让用户确认“这是不是我”。"""
+    uid = str(uid or "").strip()
+    if not uid.isdigit():
+        return 400, {"ok": False, "reason": "bad_uid", "message": "UID 应该是纯数字"}
+
+    url = f"{LUOGU_BASE}/user/{urllib.parse.quote(uid)}?_contentOnly=1"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": UA,
+            "x-luogu-type": "content-only",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+            data = json.loads(resp.read().decode("utf-8", "ignore"))
+    except socket.timeout:
+        return 200, {"ok": False, "reason": "timeout", "message": "洛谷响应超时"}
+    except urllib.error.HTTPError as exc:
+        return 200, {"ok": False, "reason": f"http_{exc.code}", "message": f"洛谷返回 {exc.code}"}
+    except Exception as exc:  # noqa: BLE001
+        return 200, {"ok": False, "reason": "network", "message": f"连不上洛谷：{exc}"}
+
+    user = (data.get("currentData") or {}).get("user") or {}
+    name = user.get("name") or ""
+    if not name:
+        return 200, {"ok": False, "reason": "not_found", "message": "查不到这个 UID 的用户"}
+
+    return 200, {
+        "ok": True,
+        "uid": str(user.get("uid") or uid),
+        "name": name,
+        "avatar": user.get("avatar") or "",
+        "slogan": user.get("slogan") or "",
+    }
+
+
 def fetch_records(uid, page=1, timeout=12):
     """返回 (状态码, 响应体 dict)。"""
     uid = str(uid or "").strip()

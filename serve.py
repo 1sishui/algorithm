@@ -91,6 +91,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/health":
             self._send_json(200, health_payload(with_probe="probe=1" in query))
             return
+        if path == "/api/luogu/user":
+            params = urllib.parse.parse_qs(query)
+            uid = (params.get("uid") or [""])[0]
+            try:
+                status, body = luogu_proxy.fetch_user(uid)
+            except Exception as exc:  # noqa: BLE001
+                status, body = 500, {"ok": False, "reason": "proxy_error", "message": str(exc)[:160]}
+            print(f"[luogu] user uid={uid} ok={body.get('ok')} reason={body.get('reason', '-')}", flush=True)
+            self._send_json(status, body)
+            return
         if path == "/api/luogu":
             params = urllib.parse.parse_qs(query)
             uid = (params.get("uid") or [""])[0]

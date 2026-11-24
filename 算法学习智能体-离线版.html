@@ -2625,7 +2625,43 @@ const __m_import_luoguClient = (function () {
  * 由本机去取公开记录再返回。只读，不涉及登录态。
  */
 const ENDPOINT = '/api/luogu';
+const USER_ENDPOINT = '/api/luogu/user';
 const TIMEOUT = 15000;
+
+/**
+ * 查 UID 对应的公开资料，用来在导入前让用户确认“这是不是我”。
+ * 只读昵称/头像，不涉及任何凭证。
+ */
+async function fetchLuoguUser(uid) {
+  if (typeof location !== 'undefined' && location.protocol === 'file:') {
+    return { ok: false, reason: 'offline_file', message: '离线版没有本地服务' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT);
+
+  try {
+    const response = await fetch(`${USER_ENDPOINT}?uid=${encodeURIComponent(uid)}`, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' }
+    });
+
+    if (response.status === 404 || response.status === 501) {
+      return { ok: false, reason: 'stale_server', message: '当前服务是旧版本，请重启 启动.bat' };
+    }
+    if (!response.ok) return { ok: false, reason: `http_${response.status}`, message: `服务返回 ${response.status}` };
+
+    const data = await response.json();
+    if (!data || !data.ok) {
+      return { ok: false, reason: (data && data.reason) || 'unknown', message: (data && data.message) || '' };
+    }
+    return { ok: true, name: data.name, uid: data.uid, avatar: data.avatar };
+  } catch (error) {
+    return { ok: false, reason: error.name === 'AbortError' ? 'timeout' : 'network', message: '连不上本地服务' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function fetchLuoguPage(uid, page = 1) {
   if (typeof location !== 'undefined' && location.protocol === 'file:') {
@@ -2702,7 +2738,7 @@ async function syncLuogu(uid, options = {}) {
 
   return { ok: true, records: all, total };
 }
-return { fetchLuoguPage, syncLuogu };
+return { fetchLuoguUser, fetchLuoguPage, syncLuogu };
 })();
 
 /* ===== src/assessment/submissions.js ===== */
@@ -3203,7 +3239,7 @@ const { runUserCode, TEMPLATE } = __m_user_runner;
 const { computeFeatures } = __m_assessment_features;
 const { computeSubmissionFeatures } = __m_assessment_submissions;
 const { BOOKMARKLET, normalizeRecords, summarizeSubmissions, difficultyLabel } = __m_import_luogu;
-const { syncLuogu } = __m_import_luoguClient;
+const { syncLuogu, fetchLuoguUser } = __m_import_luoguClient;
 const { pushRecord, loadRecords, saveRecords, clearAll, summarize, serialize, describe, groupBy } = __m_user_history;
 
 const $ = (id) => document.getElementById(id);
@@ -3771,9 +3807,13 @@ el.clearLuogu.addEventListener('click', () => {
 /* ---------------- 洛谷账号绑定（按 UID 定时同步） ---------------- */
 
 const LUOGU_UID_KEY = 'algo-agent:luogu-uid';
+const LUOGU_NAME_KEY = 'algo-agent:luogu-name';
 let luoguUid = '';
+let boundName = '';
+
 try {
   luoguUid = localStorage.getItem(LUOGU_UID_KEY) || '';
+  boundName = localStorage.getItem(LUOGU_NAME_KEY) || '';
 } catch {
   luoguUid = '';
 }
@@ -3833,14 +3873,56 @@ async function syncFromLuogu({ full = false, quiet = false } = {}) {
   }
 
   const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  setSyncStatus(`已同步 ${normalized.length} 条 · ${time}`, 'ok');
+  const who = boundName ? `${boundName} · ` : '';
+  setSyncStatus(`${who}已同步 ${normalized.length} 条 · ${time}`, 'ok');
 }
 
-el.bindLuogu.addEventListener('click', () => syncFromLuogu({ full: true }));
+el.bindLuogu.addEventListener('click', bindLuoguAccount);
 el.syncLuoguBtn.addEventListener('click', () => syncFromLuogu({ full: false }));
 el.luoguUid.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') syncFromLuogu({ full: true });
+  if (event.key === 'Enter') bindLuoguAccount();
 });
+
+/**
+ * 绑定前先查一次资料并让用户确认。
+ * 这是为了防止 UID 填错、导入了别人的做题数据——数据错了比没数据更糟。
+ */
+async function bindLuoguAccount() {
+  const uid = String(el.luoguUid.value || '').trim();
+  if (!/^\d+$/.test(uid)) {
+    setSyncStatus('UID 应该是纯数字（个人主页网址里那一串）', 'bad');
+    return;
+  }
+
+  setSyncStatus('正在确认账号…', 'muted');
+  const info = await fetchLuoguUser(uid);
+
+  if (info.ok) {
+    const yes = window.confirm(
+      `即将绑定：${info.name}（UID ${uid}）\n\n请确认这是你自己的洛谷账号。\nUID 填错会导入别人的做题数据。`
+    );
+    if (!yes) {
+      setSyncStatus('已取消绑定', 'muted');
+      return;
+    }
+    boundName = info.name;
+    try {
+      localStorage.setItem(LUOGU_NAME_KEY, boundName);
+    } catch {
+      /* 忽略 */
+    }
+  } else {
+    const yes = window.confirm(
+      `查不到 UID ${uid} 的资料（${info.message || info.reason || '未知原因'}）。\n\n仍然尝试同步？`
+    );
+    if (!yes) {
+      setSyncStatus('已取消', 'muted');
+      return;
+    }
+  }
+
+  await syncFromLuogu({ full: true });
+}
 
 // 每 10 分钟静默拉一次第一页（只看有没有新提交），页面切到后台时跳过
 setInterval(() => {

@@ -25,7 +25,7 @@ import {
   summarizeSubmissions,
   difficultyLabel
 } from './import/luogu.js';
-import { syncLuogu } from './import/luoguClient.js';
+import { syncLuogu, fetchLuoguUser } from './import/luoguClient.js';
 import {
   pushRecord,
   loadRecords,
@@ -602,9 +602,13 @@ el.clearLuogu.addEventListener('click', () => {
 /* ---------------- 洛谷账号绑定（按 UID 定时同步） ---------------- */
 
 const LUOGU_UID_KEY = 'algo-agent:luogu-uid';
+const LUOGU_NAME_KEY = 'algo-agent:luogu-name';
 let luoguUid = '';
+let boundName = '';
+
 try {
   luoguUid = localStorage.getItem(LUOGU_UID_KEY) || '';
+  boundName = localStorage.getItem(LUOGU_NAME_KEY) || '';
 } catch {
   luoguUid = '';
 }
@@ -664,14 +668,56 @@ async function syncFromLuogu({ full = false, quiet = false } = {}) {
   }
 
   const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  setSyncStatus(`已同步 ${normalized.length} 条 · ${time}`, 'ok');
+  const who = boundName ? `${boundName} · ` : '';
+  setSyncStatus(`${who}已同步 ${normalized.length} 条 · ${time}`, 'ok');
 }
 
-el.bindLuogu.addEventListener('click', () => syncFromLuogu({ full: true }));
+el.bindLuogu.addEventListener('click', bindLuoguAccount);
 el.syncLuoguBtn.addEventListener('click', () => syncFromLuogu({ full: false }));
 el.luoguUid.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') syncFromLuogu({ full: true });
+  if (event.key === 'Enter') bindLuoguAccount();
 });
+
+/**
+ * 绑定前先查一次资料并让用户确认。
+ * 这是为了防止 UID 填错、导入了别人的做题数据——数据错了比没数据更糟。
+ */
+async function bindLuoguAccount() {
+  const uid = String(el.luoguUid.value || '').trim();
+  if (!/^\d+$/.test(uid)) {
+    setSyncStatus('UID 应该是纯数字（个人主页网址里那一串）', 'bad');
+    return;
+  }
+
+  setSyncStatus('正在确认账号…', 'muted');
+  const info = await fetchLuoguUser(uid);
+
+  if (info.ok) {
+    const yes = window.confirm(
+      `即将绑定：${info.name}（UID ${uid}）\n\n请确认这是你自己的洛谷账号。\nUID 填错会导入别人的做题数据。`
+    );
+    if (!yes) {
+      setSyncStatus('已取消绑定', 'muted');
+      return;
+    }
+    boundName = info.name;
+    try {
+      localStorage.setItem(LUOGU_NAME_KEY, boundName);
+    } catch {
+      /* 忽略 */
+    }
+  } else {
+    const yes = window.confirm(
+      `查不到 UID ${uid} 的资料（${info.message || info.reason || '未知原因'}）。\n\n仍然尝试同步？`
+    );
+    if (!yes) {
+      setSyncStatus('已取消', 'muted');
+      return;
+    }
+  }
+
+  await syncFromLuogu({ full: true });
+}
 
 // 每 10 分钟静默拉一次第一页（只看有没有新提交），页面切到后台时跳过
 setInterval(() => {
