@@ -7,7 +7,9 @@
 import { algorithms, findByKnowledgePoint } from './algorithms/registry.js';
 import { createArrayBars } from './render/arrayBars.js';
 import { createTreeView } from './render/treeView.js';
+import { createGraphView } from './render/graphView.js';
 import { buildTree } from './algorithms/tree/model.js';
+import { parseEdgeList } from './algorithms/graph/model.js';
 import { Player } from './core/player.js';
 import { categories, nodeById, recommend } from './knowledge/graph.js';
 import { diagnose } from './diagnosis/rules.js';
@@ -83,6 +85,7 @@ const menu = [...algorithms, USER_ALGO];
 
 const ARRAY_DEFAULT = '5, 2, 9, 1, 7, 3, 8';
 const TREE_DEFAULT = '4, 2, 6, 1, 3, 5, 7';
+const GRAPH_DEFAULT = 'A-B, A-C, B-D, C-D, D-E, E-F, C-F';
 
 let renderer = null;
 let skipFirstRecord = true; // 页面刚打开时的首次生成不计入记录
@@ -90,12 +93,14 @@ const mastery = createMastery(el.mastery);
 
 let currentAlgo = algorithms[0];
 
-/** 按算法的 view 切换渲染器：数组柱状图 / SVG 树 */
+/** 按算法的 view 切换渲染器：数组柱状图 / SVG 树 / SVG 图 */
 function ensureRenderer(view) {
   if (renderer && renderer.view === view) return renderer;
   el.bars.innerHTML = '';
-  el.bars.classList.toggle('tree-mode', view === 'tree');
-  renderer = view === 'tree' ? createTreeView(el.bars) : createArrayBars(el.bars);
+  el.bars.classList.toggle('tree-mode', view === 'tree' || view === 'graph');
+  if (view === 'tree') renderer = createTreeView(el.bars);
+  else if (view === 'graph') renderer = createGraphView(el.bars);
+  else renderer = createArrayBars(el.bars);
   return renderer;
 }
 
@@ -106,8 +111,9 @@ const player = new Player({
 
     const metrics = step.metrics || {};
     el.compare.textContent = metrics.comparisons ?? metrics.visited ?? 0;
-    el.swap.textContent = metrics.swaps ?? metrics.pushed ?? 0;
-    el.depth.textContent = step.depth ?? (step.stack ? step.stack.length : 0);
+    el.swap.textContent = metrics.swaps ?? metrics.pushed ?? metrics.discovered ?? 0;
+    el.depth.textContent =
+      step.depth ?? (step.stack ? step.stack.length : step.frontier ? step.frontier.length : 0);
 
     el.index.textContent = index;
     el.progress.value = String(index);
@@ -161,19 +167,28 @@ function build() {
   const view = currentAlgo.view || 'array';
   ensureRenderer(view);
 
-  // 切换指标名称：数组看比较/交换，树看访问/入栈
+  // 切换指标名称：数组看比较/交换，树看访问/入栈，图看访问/发现
   const isTree = view === 'tree';
-  el.lblA.textContent = isTree ? '已访问' : '比较次数';
-  el.lblB.textContent = isTree ? '入栈次数' : '交换次数';
-  el.lblC.textContent = isTree ? '栈内元素' : '递归深度';
-  el.inputLabel.textContent = isTree ? '层序数组（null 表示空位）' : '输入（逗号分隔）';
+  const isGraph = view === 'graph';
+  const isNodeView = isTree || isGraph;
+
+  el.lblA.textContent = isNodeView ? '已访问' : '比较次数';
+  el.lblB.textContent = isTree ? '入栈次数' : isGraph ? '发现次数' : '交换次数';
+  el.lblC.textContent = isTree ? '栈内元素' : isGraph ? '待访问' : '递归深度';
+
+  if (isTree) el.inputLabel.textContent = '层序数组（null 表示空位）';
+  else if (isGraph) el.inputLabel.textContent = '边列表（如 A-B, A-C）';
+  else el.inputLabel.textContent = '输入（逗号分隔）';
 
   const tree = isTree ? parseTreeInput(el.input.value) : null;
   if (isTree) renderer.setTree(tree);
 
+  const graph = isGraph ? parseEdgeList(el.input.value) || currentAlgo.graph : null;
+  if (isGraph) renderer.setGraph(graph);
+
   const input = parseInput(el.input.value);
   const started = performance.now();
-  const steps = isTree ? currentAlgo.run(tree) : currentAlgo.run(input);
+  const steps = isTree ? currentAlgo.run(tree) : isGraph ? currentAlgo.run(graph) : currentAlgo.run(input);
   const elapsed = Math.round(performance.now() - started);
 
   player.load(steps);
@@ -188,11 +203,17 @@ function build() {
   addRun({
     at: new Date().toISOString(),
     algorithm: currentAlgo.name,
-    kind: isTree ? 'tree' : 'builtin',
-    size: isTree ? (last && last.visited ? last.visited.length : 0) : input.length,
+    kind: isGraph ? 'graph' : isTree ? 'tree' : 'builtin',
+    size: isGraph
+      ? graph.nodes.length
+      : isTree
+        ? last && last.visited
+          ? last.visited.length
+          : 0
+        : input.length,
     steps: steps.length,
-    comparisons: isTree ? null : metrics.comparisons ?? null,
-    swaps: isTree ? null : metrics.swaps ?? null,
+    comparisons: isNodeView ? null : metrics.comparisons ?? null,
+    swaps: isNodeView ? null : metrics.swaps ?? null,
     ms: elapsed,
     error: null
   });
@@ -219,8 +240,13 @@ el.select.addEventListener('change', () => {
 
   // 切换视图时，如果输入还是另一边的默认值，就给个像样的示例
   const current = el.input.value.trim();
-  if (currentAlgo.view === 'tree' && current === ARRAY_DEFAULT) el.input.value = TREE_DEFAULT;
-  if (currentAlgo.view !== 'tree' && current === TREE_DEFAULT) el.input.value = ARRAY_DEFAULT;
+  if (currentAlgo.view === 'tree' && (current === ARRAY_DEFAULT || current === GRAPH_DEFAULT)) {
+    el.input.value = TREE_DEFAULT;
+  } else if (currentAlgo.view === 'graph' && (current === ARRAY_DEFAULT || current === TREE_DEFAULT)) {
+    el.input.value = GRAPH_DEFAULT;
+  } else if (currentAlgo.view !== 'tree' && currentAlgo.view !== 'graph' && current === TREE_DEFAULT) {
+    el.input.value = ARRAY_DEFAULT;
+  }
 
   build();
   markActiveKnowledgePoint();

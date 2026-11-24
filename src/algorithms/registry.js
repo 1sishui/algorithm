@@ -10,6 +10,7 @@ import * as quick from './sort/quick.js';
 import * as bubble from './sort/bubble.js';
 import * as insertion from './sort/insertion.js';
 import { preorder, inorder, postorder } from './tree/traversal.js';
+import { bfs, dfs } from './graph/traversal.js';
 
 const sorts = [quick, bubble, insertion].map((mod) => ({
   ...mod.meta,
@@ -22,7 +23,12 @@ const traversals = [preorder, inorder, postorder].map((mod) => ({
   run: mod.run
 }));
 
-export const algorithms = [...sorts, ...traversals];
+const graphs = [bfs, dfs].map((mod) => ({
+  ...mod.meta,
+  run: mod.run
+}));
+
+export const algorithms = [...sorts, ...traversals, ...graphs];
 
 export function findAlgorithm(id) {
   return algorithms.find((algo) => algo.id === id) || algorithms[0];
