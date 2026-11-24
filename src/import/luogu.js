@@ -139,32 +139,39 @@ export function summarizeSubmissions(records) {
  * 它做三件事：读自己的 uid → 分页拉提交记录 → 下载成 luogu-records.json。
  */
 export const BOOKMARKLET = `(async () => {
-  const data = window._feInjection ? JSON.parse(decodeURIComponent(window._feInjection)) : null;
-  const uid = (data && data.currentData && data.currentData.user && data.currentData.user.uid)
-    || location.pathname.split('/').filter(Boolean).pop();
+  const decode = (text) => { try { return JSON.parse(decodeURIComponent(text)); } catch (e) { return null; } };
+  const injected = window._feInjection;
+  const data = typeof injected === 'string' ? decode(injected) : injected;
+  let uid = data && data.currentData && data.currentData.user && data.currentData.user.uid;
+  if (!uid) uid = window.prompt('没读到你的登录信息。请输入洛谷 UID（个人主页 /user/ 后面那串数字）：');
+  uid = String(uid || '').trim();
+  if (!/^\d+$/.test(uid)) { console.error('UID 无效，已停止。'); return; }
+  console.log('使用 UID：' + uid);
+
   const all = [];
   for (let page = 1; page <= 30; page++) {
     const res = await fetch('/record/list?user=' + uid + '&page=' + page + '&_contentOnly=1', {
+      credentials: 'include',
       headers: { 'x-luogu-type': 'content-only' }
     });
-    if (!res.ok) {
-      console.error('第 ' + page + ' 页请求失败：HTTP ' + res.status + '。请先登录洛谷，再运行本脚本。');
+    const text = await res.text();
+    console.log('第 ' + page + ' 页：HTTP ' + res.status + '，类型 ' + res.headers.get('content-type'));
+    if (!text.trim().startsWith('{')) {
+      console.error('返回的不是 JSON。前 120 字：' + text.slice(0, 120).replace(/\s+/g, ' '));
+      console.error('如果内容是登录页：请先登录洛谷，并打开 https://www.luogu.com.cn/user/' + uid + ' 之后再来运行。');
       break;
     }
-    let json;
-    try {
-      json = JSON.parse(await res.text());
-    } catch (e) {
-      console.error('返回的不是 JSON（可能被跳转到登录页）。请先登录洛谷再运行。');
-      break;
-    }
+    let json = null;
+    try { json = JSON.parse(text); } catch (e) { console.error('JSON 解析失败，已停止。'); break; }
     const box = (json.currentData && json.currentData.records) || json.records || json;
     const list = (box && box.result) || [];
-    if (!list.length) break;
+    if (!list.length) { console.warn('这一页没有记录，停止。'); break; }
     all.push(...list);
-    console.log('已抓取第 ' + page + ' 页，累计 ' + all.length + ' 条');
+    console.log('累计 ' + all.length + ' 条');
     if (list.length < ((box && box.perPage) || 20)) break;
   }
+
+  if (!all.length) { console.error('一条都没抓到，不生成文件。把上面的日志发给我。'); return; }
   const blob = new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -172,5 +179,4 @@ export const BOOKMARKLET = `(async () => {
   a.click();
   console.log('完成，共 ' + all.length + ' 条，文件已开始下载');
 })();`;
-
 export const IMPORT_HINT = '在洛谷任意页面按 F12 → Console，粘贴上面这段脚本回车，会下载一个 luogu-records.json。';
