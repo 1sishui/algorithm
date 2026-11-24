@@ -1,0 +1,10 @@
+{
+  "name": "algo-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "面向算法学习的导向型智能体 · 原型 v0.1",
+  "scripts": {
+    "start": "python -m http.server 8123 --bind 127.0.0.1"
+  }
+}

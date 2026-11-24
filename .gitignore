@@ -1,0 +1,14 @@
+# 密钥与本地文件，永远不要提交
+.env
+*.log
+_debug.*
+_prof/
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统
+.DS_Store
+Thumbs.db

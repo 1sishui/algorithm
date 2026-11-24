@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>算法学习智能体 · 原型 v0.1</title>
+<link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <strong>算法学习智能体</strong>
+      <span class="tag">原型 v0.1</span>
+    </div>
+    <div class="muted" id="progress-text">未开始</div>
+  </header>
+
+  <aside class="panel sidebar">
+    <h2>知识图谱</h2>
+    <div id="kg"></div>
+  </aside>
+
+  <main class="stage">
+    <div class="toolbar">
+      <label>算法
+        <select id="algo-select"></select>
+      </label>
+      <label class="grow">输入（逗号分隔）
+        <input id="input-data" value="5, 2, 9, 1, 7, 3, 8" />
+      </label>
+      <button id="btn-regenerate" class="primary">生成</button>
+    </div>
+
+    <div id="bars" class="bars"></div>
+
+    <div class="player">
+      <button id="btn-prev">上一步</button>
+      <button id="btn-play" class="primary">播放</button>
+      <button id="btn-next">下一步</button>
+      <input id="progress" type="range" min="0" max="0" value="0" />
+      <span id="step-text" class="muted">0 / 0</span>
+      <label class="speed">速度 <input id="speed" type="range" min="1" max="10" value="6" /></label>
+    </div>
+
+    <p id="note" class="note">选择一个算法，点击「生成」开始。</p>
+
+    <div class="metrics">
+      <span>比较次数 <b id="m-compare">0</b></span>
+      <span>交换次数 <b id="m-swap">0</b></span>
+      <span>递归深度 <b id="m-depth">0</b></span>
+      <span>当前步骤 <b id="m-index">0</b></span>
+    </div>
+  </main>
+
+  <aside class="panel right">
+    <section>
+      <h2>理解度评估 <span class="badge">示例数据</span></h2>
+      <div id="mastery"></div>
+    </section>
+    <section>
+      <h2>下一步推荐</h2>
+      <div id="recommend" class="recommend"></div>
+    </section>
+    <section>
+      <h2>错误诊断 <span class="badge">规则模拟 · 未接大模型</span></h2>
+      <textarea id="code-input" spellcheck="false" placeholder="把写错的代码粘进来，点下面的按钮"></textarea>
+      <div class="diag-actions">
+        <button id="btn-diagnose" class="primary">诊断这段代码</button>
+        <button id="btn-health">测试连接</button>
+      </div>
+      <div id="health" class="health"></div>
+      <div id="diagnosis" class="diagnosis"></div>
+    </section>
+  </aside>
+</div>
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>
