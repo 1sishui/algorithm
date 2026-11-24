@@ -73,6 +73,45 @@ export function serialize(records) {
   );
 }
 
+/** 按算法分组统计，给「运行记录」的统计条用 */
+export function groupBy(records) {
+  const map = new Map();
+
+  for (const record of records || []) {
+    const key = record.algorithm || '未知';
+    if (!map.has(key)) {
+      map.set(key, { algorithm: key, count: 0, errors: 0, steps: 0, ms: 0, comparisons: 0, withComparisons: 0 });
+    }
+    const group = map.get(key);
+    group.count += 1;
+
+    if (record.error) {
+      group.errors += 1;
+      continue;
+    }
+    group.steps += Number(record.steps) || 0;
+    group.ms += Number(record.ms) || 0;
+    if (Number.isFinite(record.comparisons)) {
+      group.comparisons += record.comparisons;
+      group.withComparisons += 1;
+    }
+  }
+
+  return [...map.values()]
+    .map((group) => {
+      const ok = group.count - group.errors;
+      return {
+        algorithm: group.algorithm,
+        count: group.count,
+        errors: group.errors,
+        avgSteps: ok ? Math.round(group.steps / ok) : 0,
+        avgMs: ok ? Math.round(group.ms / ok) : 0,
+        avgComparisons: group.withComparisons ? Math.round(group.comparisons / group.withComparisons) : null
+      };
+    })
+    .sort((a, b) => b.count - a.count);
+}
+
 /** 一行摘要，面板用 */
 export function describe(record) {
   if (record.error) return `${record.algorithm} · 出错：${record.error}`;

@@ -26,7 +26,7 @@
       <label>算法
         <select id="algo-select"></select>
       </label>
-      <label class="grow" id="input-wrap">输入（逗号分隔）
+      <label class="grow" id="input-wrap"><span id="input-label">输入（逗号分隔）</span>
         <input id="input-data" value="5, 2, 9, 1, 7, 3, 8" />
       </label>
       <button id="btn-regenerate" class="primary">生成</button>
@@ -73,6 +73,7 @@
           <button id="btn-export-runs">导出 JSON</button>
           <button id="btn-clear-runs">清空</button>
         </div>
+        <div id="history-stats" class="history-stats"></div>
         <ol id="history-list"></ol>
       </div>
     </details>

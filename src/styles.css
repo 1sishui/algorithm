@@ -409,3 +409,11 @@ details pre { margin-top: 6px; }
 }
 #history-list li.err { color: #fcd34d; }
 #history-list li span.time { color: var(--muted); margin-right: 6px; font-variant-numeric: tabular-nums; }
+
+/* ---------- 运行统计 ---------- */
+.history-stats { margin: 6px 0 10px; display: flex; flex-direction: column; gap: 5px; }
+.stat-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); }
+.stat-name { width: 96px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-track { flex: 1; height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+.stat-fill { display: block; height: 100%; background: linear-gradient(90deg, #2563eb, var(--blue)); }
+.stat-val { width: 66px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }

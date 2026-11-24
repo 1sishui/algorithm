@@ -61,4 +61,21 @@ const line = h.describe({ algorithm: '中序遍历', size: 7, steps: 21, compari
 assert.ok(line.includes('中序遍历') && line.includes('21 步'));
 assert.ok(!line.includes('比较'), '树的记录不该出现比较次数');
 
-console.log('✅ 运行记录自测通过：8 项检查');
+// 9. 分组统计：次数、错误数、平均步数、平均比较
+const groups = h.groupBy([
+  { algorithm: '快速排序', steps: 10, ms: 2, comparisons: 4 },
+  { algorithm: '快速排序', steps: 20, ms: 4, comparisons: 6 },
+  { algorithm: '快速排序', steps: 0, ms: 1, comparisons: 0, error: '出错' },
+  { algorithm: '中序遍历', steps: 21, ms: 3, comparisons: null }
+]);
+assert.equal(groups[0].algorithm, '快速排序', '次数最多的应排在前面');
+assert.equal(groups[0].count, 3);
+assert.equal(groups[0].errors, 1);
+assert.equal(groups[0].avgSteps, 15, '平均步数只算成功的');
+assert.equal(groups[0].avgComparisons, 5);
+assert.equal(groups[1].avgComparisons, null, '树的记录平均比较应为 null');
+
+// 10. 空记录不炸
+assert.deepEqual(h.groupBy([]), []);
+
+console.log('✅ 运行记录自测通过：10 项检查');

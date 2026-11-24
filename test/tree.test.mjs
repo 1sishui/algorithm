@@ -40,6 +40,20 @@ for (const algo of [preorder, inorder, postorder]) {
   }
 }
 
+// 自定义树：run(root) 必须用它，而不是内置的演示树
+const custom = buildTree([1, 2, 3]);
+const customInorder = inorder.run(custom);
+const customOrder = customInorder[customInorder.length - 1].visited.map((id) => {
+  const idx = Number(id.slice(1));
+  return [1, 2, 3][idx];
+});
+assert.deepEqual(customOrder, [2, 1, 3], '自定义树的遍历顺序不对');
+
+// 空树不能崩
+const emptySteps = inorder.run(null);
+assert.equal(emptySteps.length, 1);
+assert.match(emptySteps[0].note, /空树/);
+
 // 层序建树：下标 i 的左孩子在 2i+1、右孩子在 2i+2
 const t = buildTree([1, 2, 3]);
 assert.equal(t.val, 1);

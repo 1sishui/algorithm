@@ -44,9 +44,8 @@ export const preorder = {
     view: 'tree',
     tree: DEMO_TREE
   },
-  run() {
+  run(root = DEMO_TREE) {
     const { steps, state, push } = makeSteps();
-    const root = DEMO_TREE;
     if (!root) {
       push('空树，没有可访问的节点');
       return steps;
@@ -92,9 +91,8 @@ export const inorder = {
     view: 'tree',
     tree: DEMO_TREE
   },
-  run() {
+  run(root = DEMO_TREE) {
     const { steps, state, push } = makeSteps();
-    const root = DEMO_TREE;
     if (!root) {
       push('空树，没有可访问的节点');
       return steps;
@@ -140,9 +138,8 @@ export const postorder = {
     view: 'tree',
     tree: DEMO_TREE
   },
-  run() {
+  run(root = DEMO_TREE) {
     const { steps, state, push } = makeSteps();
-    const root = DEMO_TREE;
     if (!root) {
       push('空树，没有可访问的节点');
       return steps;

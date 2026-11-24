@@ -7,6 +7,7 @@
 import { algorithms, findByKnowledgePoint } from './algorithms/registry.js';
 import { createArrayBars } from './render/arrayBars.js';
 import { createTreeView } from './render/treeView.js';
+import { buildTree } from './algorithms/tree/model.js';
 import { Player } from './core/player.js';
 import { categories, nodeById, recommend } from './knowledge/graph.js';
 import { diagnose } from './diagnosis/rules.js';
@@ -21,7 +22,8 @@ import {
   clearAll,
   summarize,
   serialize,
-  describe
+  describe,
+  groupBy
 } from './user/history.js';
 
 const $ = (id) => document.getElementById(id);
@@ -55,6 +57,7 @@ const el = {
   lblB: $('lbl-b'),
   lblC: $('lbl-c'),
   inputWrap: $('input-wrap'),
+  inputLabel: $('input-label'),
   mycode: $('mycode'),
   userCode: $('user-code'),
   runCode: $('btn-run-code'),
@@ -64,6 +67,7 @@ const el = {
   historyCount: $('history-count'),
   historySummary: $('history-summary'),
   historyList: $('history-list'),
+  historyStats: $('history-stats'),
   exportRuns: $('btn-export-runs'),
   clearRuns: $('btn-clear-runs')
 };
@@ -76,6 +80,9 @@ const USER_ALGO = {
   view: 'array'
 };
 const menu = [...algorithms, USER_ALGO];
+
+const ARRAY_DEFAULT = '5, 2, 9, 1, 7, 3, 8';
+const TREE_DEFAULT = '4, 2, 6, 1, 3, 5, 7';
 
 let renderer = null;
 let skipFirstRecord = true; // 页面刚打开时的首次生成不计入记录
@@ -128,6 +135,22 @@ function parseInput(text) {
   return nums.slice(0, 60).map((n) => Math.round(n));
 }
 
+/** 层序数组 → 二叉树；null / 空 / none 表示空位 */
+function parseTreeInput(text) {
+  const parts = String(text)
+    .split(/[,\s，、]+/)
+    .filter(Boolean);
+
+  const values = parts.slice(0, 31).map((part) => {
+    if (/^(null|none|空|-)$/i.test(part)) return null;
+    const num = Number(part);
+    return Number.isFinite(num) ? Math.round(num) : null;
+  });
+
+  if (values.length === 0) return buildTree([4, 2, 6, 1, 3, 5, 7]);
+  return buildTree(values);
+}
+
 function build() {
   if (currentAlgo.id === USER_ALGO.id) {
     el.mycode.open = true;
@@ -143,13 +166,14 @@ function build() {
   el.lblA.textContent = isTree ? '已访问' : '比较次数';
   el.lblB.textContent = isTree ? '入栈次数' : '交换次数';
   el.lblC.textContent = isTree ? '栈内元素' : '递归深度';
-  el.inputWrap.classList.toggle('hidden', isTree);
+  el.inputLabel.textContent = isTree ? '层序数组（null 表示空位）' : '输入（逗号分隔）';
 
-  if (isTree) renderer.setTree(currentAlgo.tree);
+  const tree = isTree ? parseTreeInput(el.input.value) : null;
+  if (isTree) renderer.setTree(tree);
 
   const input = parseInput(el.input.value);
   const started = performance.now();
-  const steps = isTree ? currentAlgo.run() : currentAlgo.run(input);
+  const steps = isTree ? currentAlgo.run(tree) : currentAlgo.run(input);
   const elapsed = Math.round(performance.now() - started);
 
   player.load(steps);
@@ -192,6 +216,12 @@ el.select.value = currentAlgo.id;
 
 el.select.addEventListener('change', () => {
   currentAlgo = menu.find((algo) => algo.id === el.select.value) || algorithms[0];
+
+  // 切换视图时，如果输入还是另一边的默认值，就给个像样的示例
+  const current = el.input.value.trim();
+  if (currentAlgo.view === 'tree' && current === ARRAY_DEFAULT) el.input.value = TREE_DEFAULT;
+  if (currentAlgo.view !== 'tree' && current === TREE_DEFAULT) el.input.value = ARRAY_DEFAULT;
+
   build();
   markActiveKnowledgePoint();
 });
@@ -311,6 +341,30 @@ function renderRuns() {
       const time = String(record.at || '').slice(11, 19);
       const cls = record.error ? ' class="err"' : '';
       return `<li${cls}><span class="time">${time}</span>${escapeText(describe(record))}</li>`;
+    })
+    .join('');
+
+  renderStats();
+}
+
+function renderStats() {
+  const groups = groupBy(runs).slice(0, 4);
+  if (groups.length === 0) {
+    el.historyStats.innerHTML = '';
+    return;
+  }
+
+  const max = Math.max(...groups.map((g) => g.count));
+  el.historyStats.innerHTML = groups
+    .map((group) => {
+      const width = Math.round((group.count / max) * 100);
+      const compare = group.avgComparisons === null ? '' : ` · 比较 ${group.avgComparisons}`;
+      return `
+        <div class="stat-row" title="平均 ${group.avgSteps} 步${compare} · 平均 ${group.avgMs} ms">
+          <span class="stat-name">${escapeText(group.algorithm)}</span>
+          <span class="stat-track"><span class="stat-fill" style="width:${width}%"></span></span>
+          <span class="stat-val">${group.count} 次${group.errors ? `（错 ${group.errors}）` : ''}</span>
+        </div>`;
     })
     .join('');
 }
