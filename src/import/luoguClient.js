@@ -20,7 +20,27 @@ export async function fetchLuoguPage(uid, page = 1) {
       signal: controller.signal,
       headers: { Accept: 'application/json' }
     });
-    const data = await response.json();
+
+    // 404/501 说明端口上跑的是旧版服务（没有 /api/luogu 这个路由）
+    if (response.status === 404 || response.status === 501) {
+      return {
+        ok: false,
+        reason: 'stale_server',
+        message: '当前服务是旧版本（没有洛谷接口）。请关掉那个黑窗口，重新双击「启动.bat」'
+      };
+    }
+
+    if (!response.ok) {
+      return { ok: false, reason: `http_${response.status}`, message: `本地服务返回 ${response.status}` };
+    }
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      return { ok: false, reason: 'bad_response', message: '本地服务返回的不是 JSON，可能还是旧版本' };
+    }
+
     if (!data || !data.ok) {
       return { ok: false, reason: (data && data.reason) || 'unknown', message: (data && data.message) || '' };
     }

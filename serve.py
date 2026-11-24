@@ -23,7 +23,7 @@ import webbrowser
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT") or 8123)
-VERSION = "0.2"
+VERSION = "0.3"
 
 sys.path.insert(0, ROOT)
 from server import llm_proxy  # noqa: E402
