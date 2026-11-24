@@ -517,8 +517,9 @@ details pre { margin-top: 6px; }
 
   <aside class="panel right">
     <section>
-      <h2>理解度评估 <span class="badge">示例数据</span></h2>
+      <h2>理解度评估 <span class="badge">由运行记录推算</span></h2>
       <div id="mastery"></div>
+      <div id="mastery-source" class="muted"></div>
     </section>
     <section>
       <h2>下一步推荐</h2>
@@ -596,6 +597,13 @@ const allNodes = categories.flatMap((cat) => cat.nodes);
 
 const nodeById = new Map(allNodes.map((node) => [node.id, node]));
 
+/** 由知识点 id 反查所属大类名（kp.1.2 → 排序） */
+function categoryOfKp(kpId) {
+  const index = Number(String(kpId || '').split('.')[1]);
+  const category = categories[index];
+  return category ? category.name : null;
+}
+
 function demoMastery(id) {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 1000;
@@ -618,7 +626,7 @@ function recommend(nodes = allNodes) {
 
   return { node: target, why };
 }
-return { categories, allNodes, nodeById, recommend };
+return { categories, allNodes, nodeById, categoryOfKp, recommend };
 })();
 
 /* ===== src/diagnosis/rules.js ===== */
@@ -749,60 +757,266 @@ function diagnose(code) {
 return { diagnose };
 })();
 
+/* ===== src/assessment/features.js ===== */
+const __m_assessment_features = (function () {
+/**
+ * 六维特征 v0：从「运行记录」推算行为指标
+ *
+ * 重要声明：这六个分数是**行为代理指标**，不是“理解度真值”。
+ * 它们的价值在于——全部由真实运行数据算出，公式公开、可复现、可讨论，
+ * 而不是像早期版本那样用 id 哈希随机生成。
+ *
+ * 每个维度都返回 { value, detail }：
+ *   value  0~100，数据不足时为 null
+ *   detail 一句话说明这个分数是怎么来的（答辩时可以直接念）
+ */
+const DIMENSIONS = [
+  { key: 'fix', name: '错误修正', desc: '出错之后有没有改对' },
+  { key: 'transfer', name: '题型迁移', desc: '同类算法练得够不够广' },
+  { key: 'diversity', name: '思路多样性', desc: '用过的算法是否分散' },
+  { key: 'attempt', name: '尝试模式', desc: '一次练习里迭代了几轮' },
+  { key: 'coverage', name: '覆盖均衡', desc: '各大类是否都练到' },
+  { key: 'slope', name: '难度爬升', desc: '输入规模是否在变大' }
+];
+
+const SESSION_GAP_MS = 30 * 60 * 1000;
+
+function clamp(value, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function entropy(counts) {
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total === 0) return 0;
+  return counts.reduce((sum, count) => {
+    if (count === 0) return sum;
+    const p = count / total;
+    return sum - p * Math.log(p);
+  }, 0);
+}
+
+function median(nums) {
+  if (nums.length === 0) return 0;
+  const sorted = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** 按 30 分钟无操作切分会话 */
+function splitSessions(runs) {
+  const sorted = [...runs].sort((a, b) => new Date(a.at) - new Date(b.at));
+  const sessions = [];
+  let last = null;
+
+  for (const run of sorted) {
+    const time = new Date(run.at).getTime();
+    if (!last || time - last > SESSION_GAP_MS) sessions.push([]);
+    sessions[sessions.length - 1].push(run);
+    last = time;
+  }
+  return sessions;
+}
+
+/**
+ * @param {Array} runs 运行记录
+ * @param {Array} catalog 可选：算法清单 [{name, category}]，用来算“同类覆盖度”
+ */
+function computeFeatures(runs, catalog = []) {
+  const list = (runs || []).filter((run) => run && run.at);
+  const sample = list.length;
+
+  const dims = {
+    fix: { value: null, detail: '还没有运行记录' },
+    transfer: { value: null, detail: '还没有运行记录' },
+    diversity: { value: null, detail: '还没有运行记录' },
+    attempt: { value: null, detail: '还没有运行记录' },
+    coverage: { value: null, detail: '还没有运行记录' },
+    slope: { value: null, detail: '还没有运行记录' }
+  };
+
+  if (sample === 0) {
+    return { dims, sample: 0, confidence: 0, sessions: 0 };
+  }
+
+  const ordered = [...list].sort((a, b) => new Date(a.at) - new Date(b.at));
+  const sessions = splitSessions(ordered);
+
+  /* ---- 1. 错误修正：出错之后，同一算法是否被改对 ---- */
+  {
+    let errors = 0;
+    let fixed = 0;
+    for (let i = 0; i < ordered.length; i++) {
+      if (!ordered[i].error) continue;
+      errors += 1;
+      const next = ordered.slice(i + 1).find((run) => run.algorithm === ordered[i].algorithm);
+      if (next && !next.error) fixed += 1;
+    }
+
+    if (errors === 0) {
+      dims.fix = { value: 70, detail: `${sample} 次运行没有报错，暂按 70 分计（无法观察修正行为）` };
+    } else {
+      const rate = fixed / errors;
+      dims.fix = {
+        value: Math.round(clamp(30 + 60 * rate)),
+        detail: `出错 ${errors} 次，其中 ${fixed} 次在后续运行中改对（修正率 ${(rate * 100).toFixed(0)}%）`
+      };
+    }
+  }
+
+  /* ---- 2. 题型迁移：同类算法里练过多少种 ---- */
+  {
+    const byCategory = new Map();
+    for (const run of ordered) {
+      const cat = run.category || '未分类';
+      if (!byCategory.has(cat)) byCategory.set(cat, new Set());
+      byCategory.get(cat).add(run.algorithm);
+    }
+
+    const available = new Map();
+    for (const algo of catalog) {
+      const cat = algo.category || '未分类';
+      available.set(cat, (available.get(cat) || 0) + 1);
+    }
+
+    let sum = 0;
+    let count = 0;
+    for (const [cat, used] of byCategory) {
+      const total = available.get(cat) || used.size;
+      sum += used.size / Math.max(1, total);
+      count += 1;
+    }
+    const coverage = count ? sum / count : 0;
+    const okRuns = ordered.filter((run) => !run.error).length;
+    const success = okRuns / sample;
+
+    dims.transfer = {
+      value: Math.round(clamp(100 * coverage * (0.6 + 0.4 * success))),
+      detail: `涉及 ${count} 个类别，同类算法平均覆盖 ${(coverage * 100).toFixed(0)}%，成功率 ${(success * 100).toFixed(0)}%`
+    };
+  }
+
+  /* ---- 3. 思路多样性：用过的算法分布有多分散 ---- */
+  {
+    const usage = new Map();
+    for (const run of ordered) usage.set(run.algorithm, (usage.get(run.algorithm) || 0) + 1);
+
+    const h = entropy([...usage.values()]);
+    const maxH = Math.log(Math.max(2, usage.size));
+    const spread = maxH > 0 ? h / maxH : 0;
+
+    dims.diversity = {
+      value: Math.round(clamp(100 * spread)),
+      detail: `用过 ${usage.size} 种算法，分布${spread > 0.8 ? '较均匀' : spread > 0.5 ? '一般' : '集中在少数几种'}`
+    };
+  }
+
+  /* ---- 4. 尝试模式：一次练习里迭代了几轮 ---- */
+  {
+    const perSession = sessions.map((session) => session.length);
+    const avg = perSession.reduce((a, b) => a + b, 0) / perSession.length;
+
+    dims.attempt = {
+      value: Math.round(clamp((avg / 6) * 100)),
+      detail: `共 ${sessions.length} 次练习，平均每次 ${avg.toFixed(1)} 轮运行`
+    };
+  }
+
+  /* ---- 5. 覆盖均衡：各大类的练习量是否平均 ---- */
+  {
+    const counts = new Map();
+    for (const run of ordered) {
+      const cat = run.category || '未分类';
+      counts.set(cat, (counts.get(cat) || 0) + 1);
+    }
+    const values = [...counts.values()];
+    const h = entropy(values);
+    const maxH = Math.log(Math.max(2, values.length));
+
+    dims.coverage = {
+      value: Math.round(clamp(100 * (maxH > 0 ? h / maxH : 0))),
+      detail: `练过 ${values.length} 个类别，练习量${h / maxH > 0.8 ? '比较均衡' : '偏科明显'}`
+    };
+  }
+
+  /* ---- 6. 难度爬升：输入规模随时间的走向 ---- */
+  {
+    const sizes = ordered.map((run) => Number(run.size) || 0).filter((n) => n > 0);
+    if (sizes.length < 3) {
+      dims.slope = { value: null, detail: '至少需要 3 次有规模的运行才能看趋势' };
+    } else {
+      const n = sizes.length;
+      const meanX = (n - 1) / 2;
+      const meanY = sizes.reduce((a, b) => a + b, 0) / n;
+      let num = 0;
+      let den = 0;
+      sizes.forEach((y, x) => {
+        num += (x - meanX) * (y - meanY);
+        den += (x - meanX) ** 2;
+      });
+      const slope = den === 0 ? 0 : num / den;
+      const relative = meanY === 0 ? 0 : slope / meanY;
+
+      dims.slope = {
+        value: Math.round(clamp(50 + 250 * relative)),
+        detail: `平均规模 ${meanY.toFixed(1)}，每轮变化 ${slope >= 0 ? '+' : ''}${slope.toFixed(2)}`
+      };
+    }
+  }
+
+  return {
+    dims,
+    sample,
+    sessions: sessions.length,
+    confidence: Math.min(1, sample / 20)
+  };
+}
+return { DIMENSIONS, splitSessions, computeFeatures };
+})();
+
 /* ===== src/ui/mastery.js ===== */
 const __m_ui_mastery = (function () {
 /**
- * 六维理解度面板（演示版）
+ * 六维面板
  *
- * 真实版本中这六个数字来自 src/assessment 的特征计算 + 加权模型，
- * 现在先用示例值把交互跑通，方便后面替换。
+ * 只负责把 computeFeatures 算出来的数字画出来；公式不在这里，在 assessment/features.js。
+ * 数值为空时显示「—」，表示数据不足，而不是给个假分数。
  */
-const DIMENSIONS = [
-  { key: 'fix', name: '错误修正', desc: '从 WA 到 AC 的提交路径' },
-  { key: 'transfer', name: '题型迁移', desc: '结构相似、表述不同的题目表现' },
-  { key: 'diversity', name: '思路多样性', desc: '同一知识点下方法的丰富度' },
-  { key: 'attempt', name: '尝试模式', desc: '提交间隔与修改幅度' },
-  { key: 'coverage', name: '覆盖均衡', desc: '知识点分布是否偏科' },
-  { key: 'slope', name: '难度爬升', desc: '难度随时间的上升斜率' }
-];
+const { DIMENSIONS } = __m_assessment_features;
 
 function createMastery(container) {
   container.innerHTML = DIMENSIONS.map(
     (dim) => `
-    <div class="mastery-row" title="${dim.desc}">
+    <div class="mastery-row" title="${dim.desc}" data-row="${dim.key}">
       <span class="name">${dim.name}</span>
       <span class="track"><span class="fill" data-key="${dim.key}" style="width:0%"></span></span>
-      <span class="val" data-val="${dim.key}">0</span>
+      <span class="val" data-val="${dim.key}">—</span>
     </div>`
   ).join('');
 
-  const fills = {};
-  const vals = {};
+  const rows = {};
   DIMENSIONS.forEach((dim) => {
-    fills[dim.key] = container.querySelector(`[data-key="${dim.key}"]`);
-    vals[dim.key] = container.querySelector(`[data-val="${dim.key}"]`);
+    rows[dim.key] = {
+      row: container.querySelector(`[data-row="${dim.key}"]`),
+      fill: container.querySelector(`[data-key="${dim.key}"]`),
+      val: container.querySelector(`[data-val="${dim.key}"]`)
+    };
   });
 
-  let values = { fix: 52, transfer: 41, diversity: 63, attempt: 47, coverage: 58, slope: 44 };
-
-  function render(next) {
-    if (next) values = { ...values, ...next };
+  function render(dims) {
     DIMENSIONS.forEach((dim) => {
-      const v = Math.round(values[dim.key]);
-      fills[dim.key].style.width = `${v}%`;
-      vals[dim.key].textContent = v;
+      const item = dims ? dims[dim.key] : null;
+      const value = item && item.value != null ? Math.round(item.value) : null;
+      const target = rows[dim.key];
+
+      target.fill.style.width = value == null ? '0%' : `${value}%`;
+      target.val.textContent = value == null ? '—' : String(value);
+      target.row.title = (item && item.detail) || dim.desc;
     });
   }
 
-  function bump(key, delta) {
-    values[key] = Math.max(0, Math.min(100, values[key] + delta));
-    render();
-  }
-
-  render();
-  return { render, bump, get: () => ({ ...values }) };
+  return { render };
 }
-return { DIMENSIONS, createMastery };
+return { createMastery };
 })();
 
 /* ===== src/core/player.js ===== */
@@ -2477,12 +2691,13 @@ const { createGraphView } = __m_render_graphView;
 const { buildTree } = __m_algorithms_tree_model;
 const { parseEdgeList } = __m_algorithms_graph_model;
 const { Player } = __m_core_player;
-const { categories, nodeById, recommend } = __m_knowledge_graph;
+const { categories, nodeById, recommend, categoryOfKp } = __m_knowledge_graph;
 const { diagnose } = __m_diagnosis_rules;
 const { diagnoseWithLLM, checkHealth, explainFailure } = __m_llm_client;
 const { createDiagnosisView } = __m_ui_diagnosisPanel;
 const { createMastery } = __m_ui_mastery;
 const { runUserCode, TEMPLATE } = __m_user_runner;
+const { computeFeatures } = __m_assessment_features;
 const { pushRecord, loadRecords, saveRecords, clearAll, summarize, serialize, describe, groupBy } = __m_user_history;
 
 const $ = (id) => document.getElementById(id);
@@ -2505,6 +2720,7 @@ const el = {
   index: $('m-index'),
   kg: $('kg'),
   mastery: $('mastery'),
+  masterySource: $('mastery-source'),
   recommend: $('recommend'),
   code: $('code-input'),
   diagnoseBtn: $('btn-diagnose'),
@@ -2547,6 +2763,25 @@ const GRAPH_DEFAULT = 'A-B, A-C, B-D, C-D, D-E, E-F, C-F';
 let renderer = null;
 let skipFirstRecord = true; // 页面刚打开时的首次生成不计入记录
 const mastery = createMastery(el.mastery);
+
+/** 算法清单，供特征计算算“同类覆盖度” */
+const catalog = algorithms.map((algo) => ({
+  name: algo.name,
+  category: categoryOfKp(algo.kp) || '未分类'
+}));
+
+function refreshFeatures() {
+  const result = computeFeatures(runs, catalog);
+  mastery.render(result.dims);
+
+  if (result.sample === 0) {
+    el.masterySource.textContent = '还没有运行记录，先跑几次再看';
+    return;
+  }
+
+  const level = result.confidence >= 0.75 ? '较高' : result.confidence >= 0.4 ? '一般' : '偏低';
+  el.masterySource.textContent = `基于 ${result.sample} 条运行记录、${result.sessions} 次练习推算 · 置信度${level}`;
+}
 
 let currentAlgo = algorithms[0];
 
@@ -2660,6 +2895,8 @@ function build() {
   addRun({
     at: new Date().toISOString(),
     algorithm: currentAlgo.name,
+    kp: currentAlgo.kp || null,
+    category: categoryOfKp(currentAlgo.kp) || '未分类',
     kind: isGraph ? 'graph' : isTree ? 'tree' : 'builtin',
     size: isGraph
       ? graph.nodes.length
@@ -2745,6 +2982,8 @@ function runMyCode() {
     addRun({
       at: new Date().toISOString(),
       algorithm: '我的代码',
+      kp: null,
+      category: '自定义',
       kind: 'user',
       size: input.length,
       steps: result.steps ? result.steps.length : 0,
@@ -2766,6 +3005,8 @@ function runMyCode() {
   addRun({
     at: new Date().toISOString(),
     algorithm: '我的代码',
+    kp: null,
+    category: '自定义',
     kind: 'user',
     size: input.length,
     steps: result.steps.length,
@@ -2856,6 +3097,7 @@ function addRun(entry) {
   runs = pushRecord(runs, entry);
   saveRecords(localStorage, runs);
   renderRuns();
+  refreshFeatures();
 }
 
 el.exportRuns.addEventListener('click', () => {
@@ -3008,16 +3250,14 @@ document.addEventListener('keydown', (event) => {
   if (event.code === 'ArrowLeft') player.prev();
 });
 
-/* ---------------- 结束时的“成长”反馈（演示） ---------------- */
+/* ---------------- 播放到结尾时的知识点提示 ---------------- */
 
 let lastEndIndex = -1;
 setInterval(() => {
   if (player.atEnd && player.total > 0 && lastEndIndex !== player.index) {
     lastEndIndex = player.index;
-    mastery.bump('fix', 1);
-    mastery.bump('coverage', 1);
     const node = nodeById.get(currentAlgo.kp);
-    if (node) node.mastery = Math.min(100, node.mastery + 2);
+    if (node) node.mastery = Math.min(100, node.mastery + 1);
     markActiveKnowledgePoint();
     renderRecommend();
   }
@@ -3028,6 +3268,7 @@ setInterval(() => {
 renderKnowledgeGraph();
 renderRecommend();
 renderRuns();
+refreshFeatures();
 build();
 diagnosisView.show({
   result: diagnose('int a[10]; for (int i = 0; i <= n; i++) { a[i] = 0; }'),

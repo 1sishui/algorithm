@@ -11,12 +11,13 @@ import { createGraphView } from './render/graphView.js';
 import { buildTree } from './algorithms/tree/model.js';
 import { parseEdgeList } from './algorithms/graph/model.js';
 import { Player } from './core/player.js';
-import { categories, nodeById, recommend } from './knowledge/graph.js';
+import { categories, nodeById, recommend, categoryOfKp } from './knowledge/graph.js';
 import { diagnose } from './diagnosis/rules.js';
 import { diagnoseWithLLM, checkHealth, explainFailure } from './llm/client.js';
 import { createDiagnosisView } from './ui/diagnosisPanel.js';
 import { createMastery } from './ui/mastery.js';
 import { runUserCode, TEMPLATE } from './user/runner.js';
+import { computeFeatures } from './assessment/features.js';
 import {
   pushRecord,
   loadRecords,
@@ -48,6 +49,7 @@ const el = {
   index: $('m-index'),
   kg: $('kg'),
   mastery: $('mastery'),
+  masterySource: $('mastery-source'),
   recommend: $('recommend'),
   code: $('code-input'),
   diagnoseBtn: $('btn-diagnose'),
@@ -90,6 +92,25 @@ const GRAPH_DEFAULT = 'A-B, A-C, B-D, C-D, D-E, E-F, C-F';
 let renderer = null;
 let skipFirstRecord = true; // 页面刚打开时的首次生成不计入记录
 const mastery = createMastery(el.mastery);
+
+/** 算法清单，供特征计算算“同类覆盖度” */
+const catalog = algorithms.map((algo) => ({
+  name: algo.name,
+  category: categoryOfKp(algo.kp) || '未分类'
+}));
+
+function refreshFeatures() {
+  const result = computeFeatures(runs, catalog);
+  mastery.render(result.dims);
+
+  if (result.sample === 0) {
+    el.masterySource.textContent = '还没有运行记录，先跑几次再看';
+    return;
+  }
+
+  const level = result.confidence >= 0.75 ? '较高' : result.confidence >= 0.4 ? '一般' : '偏低';
+  el.masterySource.textContent = `基于 ${result.sample} 条运行记录、${result.sessions} 次练习推算 · 置信度${level}`;
+}
 
 let currentAlgo = algorithms[0];
 
@@ -203,6 +224,8 @@ function build() {
   addRun({
     at: new Date().toISOString(),
     algorithm: currentAlgo.name,
+    kp: currentAlgo.kp || null,
+    category: categoryOfKp(currentAlgo.kp) || '未分类',
     kind: isGraph ? 'graph' : isTree ? 'tree' : 'builtin',
     size: isGraph
       ? graph.nodes.length
@@ -288,6 +311,8 @@ function runMyCode() {
     addRun({
       at: new Date().toISOString(),
       algorithm: '我的代码',
+      kp: null,
+      category: '自定义',
       kind: 'user',
       size: input.length,
       steps: result.steps ? result.steps.length : 0,
@@ -309,6 +334,8 @@ function runMyCode() {
   addRun({
     at: new Date().toISOString(),
     algorithm: '我的代码',
+    kp: null,
+    category: '自定义',
     kind: 'user',
     size: input.length,
     steps: result.steps.length,
@@ -399,6 +426,7 @@ function addRun(entry) {
   runs = pushRecord(runs, entry);
   saveRecords(localStorage, runs);
   renderRuns();
+  refreshFeatures();
 }
 
 el.exportRuns.addEventListener('click', () => {
@@ -551,16 +579,14 @@ document.addEventListener('keydown', (event) => {
   if (event.code === 'ArrowLeft') player.prev();
 });
 
-/* ---------------- 结束时的“成长”反馈（演示） ---------------- */
+/* ---------------- 播放到结尾时的知识点提示 ---------------- */
 
 let lastEndIndex = -1;
 setInterval(() => {
   if (player.atEnd && player.total > 0 && lastEndIndex !== player.index) {
     lastEndIndex = player.index;
-    mastery.bump('fix', 1);
-    mastery.bump('coverage', 1);
     const node = nodeById.get(currentAlgo.kp);
-    if (node) node.mastery = Math.min(100, node.mastery + 2);
+    if (node) node.mastery = Math.min(100, node.mastery + 1);
     markActiveKnowledgePoint();
     renderRecommend();
   }
@@ -571,6 +597,7 @@ setInterval(() => {
 renderKnowledgeGraph();
 renderRecommend();
 renderRuns();
+refreshFeatures();
 build();
 diagnosisView.show({
   result: diagnose('int a[10]; for (int i = 0; i <= n; i++) { a[i] = 0; }'),

@@ -12,7 +12,8 @@ import path from 'node:path';
 const root = path.resolve(process.argv[2] || '.');
 const OUT = path.join(root, '算法学习智能体-离线版.html');
 
-// 依赖顺序：被依赖的放前面
+// 需要打包的模块清单。真正的执行顺序由下面的拓扑排序决定，
+// 不用手工维护“谁必须在谁前面”——漏排一次就会白屏，交给代码算更稳。
 const MODULES = [
   'src/knowledge/graph.js',
   'src/diagnosis/rules.js',
@@ -28,6 +29,7 @@ const MODULES = [
   'src/llm/client.js',
   'src/user/runner.js',
   'src/user/history.js',
+  'src/assessment/features.js',
   'src/ui/diagnosisPanel.js',
   'src/algorithms/sort/quick.js',
   'src/algorithms/sort/bubble.js',
@@ -76,8 +78,45 @@ function stripImports(code, fromFile) {
   return out;
 }
 
+/**
+ * 拓扑排序：被依赖的模块先执行。
+ * 单文件版里每个模块是一个立即执行的 IIFE，顺序错了会直接白屏，
+ * 所以这里从 import 语句自动推导顺序，避免手工维护出错。
+ */
+function topoOrder(modules) {
+  const deps = new Map();
+  for (const rel of modules) {
+    const code = fs.readFileSync(path.join(root, rel), 'utf8');
+    const found = [];
+    const re = /^import\s+(?:\*\s+as\s+\w+|\{[^}]*\})\s+from\s+['"]([^'"]+)['"]/gm;
+    let match;
+    while ((match = re.exec(code)) !== null) {
+      const target = specToPath(match[1], rel);
+      if (modules.includes(target)) found.push(target);
+    }
+    deps.set(rel, found);
+  }
+
+  const ordered = [];
+  const visiting = new Set();
+  const done = new Set();
+
+  const visit = (rel) => {
+    if (done.has(rel)) return;
+    if (visiting.has(rel)) throw new Error(`循环依赖：${rel}`);
+    visiting.add(rel);
+    for (const dep of deps.get(rel) || []) visit(dep);
+    visiting.delete(rel);
+    done.add(rel);
+    ordered.push(rel);
+  };
+
+  for (const rel of modules) visit(rel);
+  return ordered;
+}
+
 const chunks = [];
-for (const rel of MODULES) {
+for (const rel of topoOrder(MODULES)) {
   const file = path.join(root, rel);
   let code = fs.readFileSync(file, 'utf8');
   const exports = collectExports(code);

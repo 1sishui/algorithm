@@ -55,6 +55,13 @@ export const allNodes = categories.flatMap((cat) => cat.nodes);
 
 export const nodeById = new Map(allNodes.map((node) => [node.id, node]));
 
+/** 由知识点 id 反查所属大类名（kp.1.2 → 排序） */
+export function categoryOfKp(kpId) {
+  const index = Number(String(kpId || '').split('.')[1]);
+  const category = categories[index];
+  return category ? category.name : null;
+}
+
 function demoMastery(id) {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 1000;
