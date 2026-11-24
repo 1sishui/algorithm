@@ -103,6 +103,20 @@
       </div>
       <textarea id="luogu-paste" spellcheck="false" placeholder="也可以把 luogu-records.json 的内容直接粘在这里，再点「解析粘贴内容」"></textarea>
       <div id="luogu-summary" class="luogu-summary"></div>
+
+      <div class="cookie-box">
+        <p class="mycode-hint">
+          <b>用 Cookie 读私有记录</b>（公开接口取不到时才需要）<br />
+          获取方式：登录洛谷 → F12 → 切到 <b>Network</b> → 刷新页面 → 点任意一条 <code>luogu.com.cn</code> 请求 → 右侧 <b>Request Headers</b> → 找到 <code>Cookie:</code>，把后面整行复制过来。<br />
+          ⚠️ <b>Cookie 等同于你的登录态</b>：只存在本机浏览器里，只发给 127.0.0.1；别截图发给别人、别提交到 Git；退出洛谷登录后它会自动失效。
+        </p>
+        <textarea id="luogu-cookie" spellcheck="false" placeholder="粘贴 Cookie 整行（形如 __client_id=...; _uid=...; ...）"></textarea>
+        <div class="mycode-actions">
+          <button id="btn-save-cookie" class="primary">保存 Cookie 并同步</button>
+          <button id="btn-clear-cookie">清除 Cookie</button>
+          <span id="cookie-status" class="muted"></span>
+        </div>
+      </div>
     </details>
   </main>
 

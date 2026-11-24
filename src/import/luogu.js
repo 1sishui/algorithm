@@ -141,15 +141,22 @@ export function summarizeSubmissions(records) {
 export const BOOKMARKLET = `(async () => {
   const decode = (text) => { try { return JSON.parse(decodeURIComponent(text)); } catch (e) { return null; } };
   const injected = window._feInjection;
-  const data = typeof injected === 'string' ? decode(injected) : injected;
-  let uid = data && data.currentData && data.currentData.user && data.currentData.user.uid;
-  if (!uid) uid = window.prompt('没读到你的登录信息。请输入洛谷 UID（个人主页 /user/ 后面那串数字）：');
+  const pageData = typeof injected === 'string' ? decode(injected) : injected;
+  const cd = (pageData && pageData.currentData) || {};
+  let uid = (cd.user && cd.user.uid) || window.prompt('请输入你的洛谷 UID（个人主页 /user/ 后面那串数字）：');
   uid = String(uid || '').trim();
   if (!/^\d+$/.test(uid)) { console.error('UID 无效，已停止。'); return; }
   console.log('使用 UID：' + uid);
 
-  const all = [];
-  for (let page = 1; page <= 30; page++) {
+  const box = cd.records || {};
+  let all = Array.isArray(box.result) ? box.result.slice() : [];
+  const perPage = box.perPage || 20;
+  console.log('当前页面内嵌记录：' + all.length + ' 条（每页 ' + perPage + ' 条）');
+  if (all.length === 0) {
+    console.warn('当前页面没有内嵌记录。请打开 https://www.luogu.com.cn/record/list?user=' + uid + ' 再运行一次。');
+  }
+
+  for (let page = 2; page <= 30 && all.length >= perPage; page++) {
     const res = await fetch('/record/list?user=' + uid + '&page=' + page + '&_contentOnly=1', {
       credentials: 'include',
       headers: { 'x-luogu-type': 'content-only' }
@@ -157,21 +164,20 @@ export const BOOKMARKLET = `(async () => {
     const text = await res.text();
     console.log('第 ' + page + ' 页：HTTP ' + res.status + '，类型 ' + res.headers.get('content-type'));
     if (!text.trim().startsWith('{')) {
-      console.error('返回的不是 JSON。前 120 字：' + text.slice(0, 120).replace(/\s+/g, ' '));
-      console.error('如果内容是登录页：请先登录洛谷，并打开 https://www.luogu.com.cn/user/' + uid + ' 之后再来运行。');
+      console.warn('这一页不是 JSON，到这里为止（已拿到 ' + all.length + ' 条）。');
       break;
     }
     let json = null;
-    try { json = JSON.parse(text); } catch (e) { console.error('JSON 解析失败，已停止。'); break; }
-    const box = (json.currentData && json.currentData.records) || json.records || json;
-    const list = (box && box.result) || [];
-    if (!list.length) { console.warn('这一页没有记录，停止。'); break; }
-    all.push(...list);
+    try { json = JSON.parse(text); } catch (e) { break; }
+    const b = (json.currentData && json.currentData.records) || json.records || {};
+    const list = b.result || [];
+    if (!list.length) break;
+    all = all.concat(list);
     console.log('累计 ' + all.length + ' 条');
-    if (list.length < ((box && box.perPage) || 20)) break;
+    if (list.length < (b.perPage || perPage)) break;
   }
 
-  if (!all.length) { console.error('一条都没抓到，不生成文件。把上面的日志发给我。'); return; }
+  if (!all.length) { console.error('一条都没拿到，不生成文件。把上面的日志发给我。'); return; }
   const blob = new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);

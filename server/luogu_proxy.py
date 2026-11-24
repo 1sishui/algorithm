@@ -1,14 +1,19 @@
 """
 洛谷数据代理（本机）
 
-为什么需要它：洛谷的提交记录接口不带 CORS 头，浏览器直接 fetch 会被拦；
-所以由本地服务去取，再把结果交给页面。全程只读公开记录，不保存 Cookie、不碰密码。
+背景：
+  - 洛谷没有开放 API；
+  - /record/list 在没有登录态时直接 401，所以「公开记录」这条路实际上走不通；
+  - 但页面里嵌了 window._feInjection（URL 编码的 JSON），里面就有数据。
 
-注意：
-  - 只按 UID 读取**公开**的提交记录；如果对方设置了隐私，会返回“取不到”
-  - 每次同步只拉前几页，避免给洛谷造成压力（10 分钟一次的节奏）
+策略：
+  1. 带 Cookie 请求（可选），用 cookie jar 处理洛谷的 C3VK 防爬跳转；
+  2. 优先按 JSON 解析（_contentOnly=1），拿不到就从 HTML 里抠 _feInjection；
+  3. 全程不落盘、不打印 Cookie。
 """
+import http.cookiejar
 import json
+import re
 import socket
 import ssl
 import urllib.error
@@ -18,8 +23,9 @@ import urllib.request
 LUOGU_BASE = "https://www.luogu.com.cn"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
-# DNS 解析不受 urllib 的 timeout 控制，这里兜一层，避免请求一直挂着
 socket.setdefaulttimeout(15)
+
+_FE_INJECTION = re.compile(r'_feInjection\s*=\s*JSON\.parse\(decodeURIComponent\("([^"]+)"\)\)')
 
 
 def _ssl_context():
@@ -31,31 +37,88 @@ def _ssl_context():
         return ssl.create_default_context()
 
 
-def fetch_user(uid, timeout=12):
-    """取用户公开资料（昵称、头像），用来让用户确认“这是不是我”。"""
-    uid = str(uid or "").strip()
-    if not uid.isdigit():
-        return 400, {"ok": False, "reason": "bad_uid", "message": "UID 应该是纯数字"}
+def _opener(cookie_str=""):
+    """构造带 cookie jar 的 opener：洛谷会先 302 下发 C3VK，再让你重新请求。"""
+    jar = http.cookiejar.CookieJar()
+    for part in str(cookie_str or "").split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, _, value = part.partition("=")
+        name, value = name.strip(), value.strip()
+        if not name:
+            continue
+        jar.set_cookie(
+            http.cookiejar.Cookie(
+                0, name, value, None, False, "www.luogu.com.cn", False, False,
+                "/", True, False, None, False, None, None, {}
+            )
+        )
+    return urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+    )
 
-    url = f"{LUOGU_BASE}/user/{urllib.parse.quote(uid)}?_contentOnly=1"
+
+def _get(url, cookie="", accept="application/json", timeout=15):
+    """返回 (状态码, 文本, content-type)。401/403 会抛 PermissionError。"""
     req = urllib.request.Request(
         url,
         headers={
             "User-Agent": UA,
+            "Accept": accept,
             "x-luogu-type": "content-only",
-            "Accept": "application/json",
+            "Referer": LUOGU_BASE + "/",
         },
     )
+    try:
+        with _opener(cookie).open(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", "ignore"), resp.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise PermissionError(exc.code) from exc
+        raise
+
+
+def _extract_injection(html):
+    """从页面里抠出 _feInjection，再解出 JSON。"""
+    match = _FE_INJECTION.search(html)
+    if not match:
+        return None
+    try:
+        return json.loads(urllib.parse.unquote(match.group(1)))
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_payload(text):
+    """优先 JSON，其次页面内嵌数据。"""
+    stripped = text.lstrip()
+    if stripped.startswith("{"):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return None
+    return _extract_injection(text)
+
+
+def fetch_user(uid, timeout=15):
+    uid = str(uid or "").strip()
+    if not uid.isdigit():
+        return 400, {"ok": False, "reason": "bad_uid", "message": "UID 应该是纯数字"}
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
-            data = json.loads(resp.read().decode("utf-8", "ignore"))
+        _status, text, _ctype = _get(f"{LUOGU_BASE}/user/{uid}", accept="text/html", timeout=timeout)
+    except PermissionError:
+        return 200, {"ok": False, "reason": "forbidden", "message": "洛谷拒绝了请求，稍后再试"}
     except socket.timeout:
         return 200, {"ok": False, "reason": "timeout", "message": "洛谷响应超时"}
-    except urllib.error.HTTPError as exc:
-        return 200, {"ok": False, "reason": f"http_{exc.code}", "message": f"洛谷返回 {exc.code}"}
     except Exception as exc:  # noqa: BLE001
         return 200, {"ok": False, "reason": "network", "message": f"连不上洛谷：{exc}"}
+
+    data = _parse_payload(text)
+    if not data:
+        return 200, {"ok": False, "reason": "bad_response", "message": "没解析出页面数据"}
 
     user = (data.get("currentData") or {}).get("user") or {}
     name = user.get("name") or ""
@@ -71,63 +134,72 @@ def fetch_user(uid, timeout=12):
     }
 
 
-def fetch_records(uid, page=1, timeout=12):
-    """返回 (状态码, 响应体 dict)。"""
+def fetch_records_with_cookie(uid, page=1, cookie="", timeout=15):
+    """用登录态读记录（洛谷的 /record/list 没有登录态会 401）。"""
     uid = str(uid or "").strip()
     if not uid.isdigit():
-        return 400, {"ok": False, "reason": "bad_uid", "message": "UID 应该是纯数字（个人主页网址里的那串）"}
+        return 400, {"ok": False, "reason": "bad_uid", "message": "UID 应该是纯数字"}
+    if not cookie or len(cookie) < 10:
+        return 400, {"ok": False, "reason": "no_cookie", "message": "Cookie 为空"}
 
-    url = (
-        f"{LUOGU_BASE}/record/list?user={urllib.parse.quote(uid)}"
-        f"&page={int(page)}&_contentOnly=1"
-    )
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Referer": f"{LUOGU_BASE}/user/{uid}",
-            "x-luogu-type": "content-only",
-            "Accept": "application/json",
-        },
-    )
-
+    url = f"{LUOGU_BASE}/record/list?user={urllib.parse.quote(uid)}&page={int(page)}&_contentOnly=1"
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
-            raw = resp.read().decode("utf-8", "ignore")
-    except urllib.error.HTTPError as exc:
-        if exc.code in (301, 302, 303, 307, 308):
-            return 200, {
-                "ok": False,
-                "reason": "login_required",
-                "message": "洛谷把这个请求跳转到了登录页（302）：说明记录不公开，或者该接口需要登录态。可以开放隐私设置，或改用控制台脚本。",
-            }
-        if exc.code in (403, 401):
-            return 200, {
-                "ok": False,
-                "reason": "forbidden",
-                "message": "洛谷拒绝了请求：记录可能设了隐私，或需要登录。可以改用控制台脚本导出。",
-            }
-        return 200, {"ok": False, "reason": f"http_{exc.code}", "message": f"洛谷返回 {exc.code}"}
-    except urllib.error.URLError as exc:
-        return 200, {"ok": False, "reason": "network", "message": f"连不上洛谷：{exc.reason}"}
+        _status, text, _ctype = _get(url, cookie=cookie, timeout=timeout)
+    except PermissionError:
+        return 200, {"ok": False, "reason": "login_required", "message": "洛谷返回 401：Cookie 无效或已过期，请重新复制"}
     except socket.timeout:
-        return 200, {"ok": False, "reason": "timeout", "message": "洛谷响应超时，稍后再试或改用控制台脚本"}
+        return 200, {"ok": False, "reason": "timeout", "message": "洛谷响应超时"}
     except Exception as exc:  # noqa: BLE001
-        return 200, {"ok": False, "reason": "unknown", "message": str(exc)[:160]}
+        return 200, {"ok": False, "reason": "network", "message": f"连不上洛谷：{exc}"}
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = _parse_payload(text)
+    if not data:
+        return 200, {"ok": False, "reason": "login_required", "message": "没解析出记录：Cookie 可能已过期"}
+
+    box = (data.get("currentData") or {}).get("records") or data.get("records") or {}
+    records = box.get("result") or []
+    if not records:
         return 200, {
             "ok": False,
-            "reason": "bad_response",
-            "message": "洛谷返回的不是 JSON，可能触发了验证页。请改用控制台脚本导出。",
+            "reason": "empty",
+            "message": "记录为空：可能是 UID 不对，或这个账号没有提交记录",
         }
 
-    current = data.get("currentData") or {}
-    box = current.get("records") or data.get("records") or {}
-    records = box.get("result") or []
+    return 200, {
+        "ok": True,
+        "records": records,
+        "perPage": box.get("perPage") or 20,
+        "count": box.get("count"),
+        "page": int(page),
+    }
 
+
+def fetch_records(uid, page=1, timeout=15):
+    """不带 Cookie 的尝试（大概率 401，保留是为了给出明确提示）。"""
+    uid = str(uid or "").strip()
+    if not uid.isdigit():
+        return 400, {"ok": False, "reason": "bad_uid", "message": "UID 应该是纯数字"}
+
+    url = f"{LUOGU_BASE}/record/list?user={urllib.parse.quote(uid)}&page={int(page)}&_contentOnly=1"
+    try:
+        _status, text, _ctype = _get(url, timeout=timeout)
+    except PermissionError:
+        return 200, {
+            "ok": False,
+            "reason": "login_required",
+            "message": "洛谷要求登录：记录必须带 Cookie 才能读。填下面的 Cookie 再同步。",
+        }
+    except socket.timeout:
+        return 200, {"ok": False, "reason": "timeout", "message": "洛谷响应超时"}
+    except Exception as exc:  # noqa: BLE001
+        return 200, {"ok": False, "reason": "network", "message": f"连不上洛谷：{exc}"}
+
+    data = _parse_payload(text)
+    if not data:
+        return 200, {"ok": False, "reason": "login_required", "message": "洛谷要求登录"}
+
+    box = (data.get("currentData") or {}).get("records") or data.get("records") or {}
+    records = box.get("result") or []
     return 200, {
         "ok": True,
         "records": records,

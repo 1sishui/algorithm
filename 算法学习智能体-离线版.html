@@ -487,6 +487,23 @@ details pre { margin-top: 6px; }
 #luogu-sync-status.ok { color: #86efac; }
 #luogu-sync-status.bad { color: #fcd34d; }
 
+/* ---------- Cookie 绑定 ---------- */
+.cookie-box {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+#luogu-cookie {
+  width: 100%;
+  height: 64px;
+  resize: vertical;
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+  margin-bottom: 8px;
+}
+#cookie-status.ok { color: #86efac; }
+#cookie-status.bad { color: #fcd34d; }
+
 </style>
 </head>
 <body>
@@ -586,6 +603,20 @@ details pre { margin-top: 6px; }
       </div>
       <textarea id="luogu-paste" spellcheck="false" placeholder="也可以把 luogu-records.json 的内容直接粘在这里，再点「解析粘贴内容」"></textarea>
       <div id="luogu-summary" class="luogu-summary"></div>
+
+      <div class="cookie-box">
+        <p class="mycode-hint">
+          <b>用 Cookie 读私有记录</b>（公开接口取不到时才需要）<br />
+          获取方式：登录洛谷 → F12 → 切到 <b>Network</b> → 刷新页面 → 点任意一条 <code>luogu.com.cn</code> 请求 → 右侧 <b>Request Headers</b> → 找到 <code>Cookie:</code>，把后面整行复制过来。<br />
+          ⚠️ <b>Cookie 等同于你的登录态</b>：只存在本机浏览器里，只发给 127.0.0.1；别截图发给别人、别提交到 Git；退出洛谷登录后它会自动失效。
+        </p>
+        <textarea id="luogu-cookie" spellcheck="false" placeholder="粘贴 Cookie 整行（形如 __client_id=...; _uid=...; ...）"></textarea>
+        <div class="mycode-actions">
+          <button id="btn-save-cookie" class="primary">保存 Cookie 并同步</button>
+          <button id="btn-clear-cookie">清除 Cookie</button>
+          <span id="cookie-status" class="muted"></span>
+        </div>
+      </div>
     </details>
   </main>
 
@@ -2590,15 +2621,22 @@ function summarizeSubmissions(records) {
 const BOOKMARKLET = `(async () => {
   const decode = (text) => { try { return JSON.parse(decodeURIComponent(text)); } catch (e) { return null; } };
   const injected = window._feInjection;
-  const data = typeof injected === 'string' ? decode(injected) : injected;
-  let uid = data && data.currentData && data.currentData.user && data.currentData.user.uid;
-  if (!uid) uid = window.prompt('没读到你的登录信息。请输入洛谷 UID（个人主页 /user/ 后面那串数字）：');
+  const pageData = typeof injected === 'string' ? decode(injected) : injected;
+  const cd = (pageData && pageData.currentData) || {};
+  let uid = (cd.user && cd.user.uid) || window.prompt('请输入你的洛谷 UID（个人主页 /user/ 后面那串数字）：');
   uid = String(uid || '').trim();
   if (!/^\d+$/.test(uid)) { console.error('UID 无效，已停止。'); return; }
   console.log('使用 UID：' + uid);
 
-  const all = [];
-  for (let page = 1; page <= 30; page++) {
+  const box = cd.records || {};
+  let all = Array.isArray(box.result) ? box.result.slice() : [];
+  const perPage = box.perPage || 20;
+  console.log('当前页面内嵌记录：' + all.length + ' 条（每页 ' + perPage + ' 条）');
+  if (all.length === 0) {
+    console.warn('当前页面没有内嵌记录。请打开 https://www.luogu.com.cn/record/list?user=' + uid + ' 再运行一次。');
+  }
+
+  for (let page = 2; page <= 30 && all.length >= perPage; page++) {
     const res = await fetch('/record/list?user=' + uid + '&page=' + page + '&_contentOnly=1', {
       credentials: 'include',
       headers: { 'x-luogu-type': 'content-only' }
@@ -2606,21 +2644,20 @@ const BOOKMARKLET = `(async () => {
     const text = await res.text();
     console.log('第 ' + page + ' 页：HTTP ' + res.status + '，类型 ' + res.headers.get('content-type'));
     if (!text.trim().startsWith('{')) {
-      console.error('返回的不是 JSON。前 120 字：' + text.slice(0, 120).replace(/\s+/g, ' '));
-      console.error('如果内容是登录页：请先登录洛谷，并打开 https://www.luogu.com.cn/user/' + uid + ' 之后再来运行。');
+      console.warn('这一页不是 JSON，到这里为止（已拿到 ' + all.length + ' 条）。');
       break;
     }
     let json = null;
-    try { json = JSON.parse(text); } catch (e) { console.error('JSON 解析失败，已停止。'); break; }
-    const box = (json.currentData && json.currentData.records) || json.records || json;
-    const list = (box && box.result) || [];
-    if (!list.length) { console.warn('这一页没有记录，停止。'); break; }
-    all.push(...list);
+    try { json = JSON.parse(text); } catch (e) { break; }
+    const b = (json.currentData && json.currentData.records) || json.records || {};
+    const list = b.result || [];
+    if (!list.length) break;
+    all = all.concat(list);
     console.log('累计 ' + all.length + ' 条');
-    if (list.length < ((box && box.perPage) || 20)) break;
+    if (list.length < (b.perPage || perPage)) break;
   }
 
-  if (!all.length) { console.error('一条都没抓到，不生成文件。把上面的日志发给我。'); return; }
+  if (!all.length) { console.error('一条都没拿到，不生成文件。把上面的日志发给我。'); return; }
   const blob = new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2678,6 +2715,58 @@ async function fetchLuoguUser(uid) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 带 Cookie 同步（可读私有记录）
+ *
+ * Cookie 只发给本机服务 /api/luogu/records，由本机转发给洛谷；
+ * 其它任何地方都收不到它。
+ */
+async function syncLuoguWithCookie(uid, cookie, options = {}) {
+  const maxPages = options.maxPages ?? 3;
+  const all = [];
+  let total = null;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT);
+
+    let data = null;
+    try {
+      const response = await fetch('/api/luogu/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid, page, cookie }),
+        signal: controller.signal
+      });
+
+      if (response.status === 404 || response.status === 501) {
+        return { ok: false, records: all, error: { message: '当前服务是旧版本，请重启 启动.bat' } };
+      }
+      data = await response.json();
+    } catch (error) {
+      return {
+        ok: false,
+        records: all,
+        error: { message: error.name === 'AbortError' ? '请求超时' : '连不上本地服务' }
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!data || !data.ok) {
+      return { ok: all.length > 0, records: all, error: { message: (data && data.message) || '同步失败', reason: data && data.reason } };
+    }
+
+    if (typeof data.count === 'number') total = data.count;
+    all.push(...(data.records || []));
+    if (options.onProgress) options.onProgress(page, all.length, total);
+
+    if ((data.records || []).length < (data.perPage || 20)) break;
+  }
+
+  return { ok: true, records: all, total };
 }
 
 async function fetchLuoguPage(uid, page = 1) {
@@ -2755,7 +2844,7 @@ async function syncLuogu(uid, options = {}) {
 
   return { ok: true, records: all, total };
 }
-return { fetchLuoguUser, fetchLuoguPage, syncLuogu };
+return { fetchLuoguUser, syncLuoguWithCookie, fetchLuoguPage, syncLuogu };
 })();
 
 /* ===== src/assessment/submissions.js ===== */
@@ -3256,7 +3345,7 @@ const { runUserCode, TEMPLATE } = __m_user_runner;
 const { computeFeatures } = __m_assessment_features;
 const { computeSubmissionFeatures } = __m_assessment_submissions;
 const { BOOKMARKLET, normalizeRecords, summarizeSubmissions, difficultyLabel } = __m_import_luogu;
-const { syncLuogu, fetchLuoguUser } = __m_import_luoguClient;
+const { syncLuogu, syncLuoguWithCookie, fetchLuoguUser } = __m_import_luoguClient;
 const { pushRecord, loadRecords, saveRecords, clearAll, summarize, serialize, describe, groupBy } = __m_user_history;
 
 const $ = (id) => document.getElementById(id);
@@ -3316,7 +3405,11 @@ const el = {
   luoguUid: $('luogu-uid'),
   bindLuogu: $('btn-bind-luogu'),
   syncLuoguBtn: $('btn-sync-luogu'),
-  luoguSyncStatus: $('luogu-sync-status')
+  luoguSyncStatus: $('luogu-sync-status'),
+  luoguCookie: $('luogu-cookie'),
+  saveCookie: $('btn-save-cookie'),
+  clearCookie: $('btn-clear-cookie'),
+  cookieStatus: $('cookie-status')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -3825,17 +3918,32 @@ el.clearLuogu.addEventListener('click', () => {
 
 const LUOGU_UID_KEY = 'algo-agent:luogu-uid';
 const LUOGU_NAME_KEY = 'algo-agent:luogu-name';
+const LUOGU_COOKIE_KEY = 'algo-agent:luogu-cookie';
 let luoguUid = '';
 let boundName = '';
+let luoguCookie = '';
 
 try {
   luoguUid = localStorage.getItem(LUOGU_UID_KEY) || '';
   boundName = localStorage.getItem(LUOGU_NAME_KEY) || '';
+  luoguCookie = localStorage.getItem(LUOGU_COOKIE_KEY) || '';
 } catch {
   luoguUid = '';
 }
 
 if (luoguUid) el.luoguUid.value = luoguUid;
+
+function maskCookie(value) {
+  if (!value) return '';
+  return `${value.slice(0, 10)}…（${value.length} 字符）`;
+}
+
+function setCookieStatus(text, kind) {
+  el.cookieStatus.textContent = text;
+  el.cookieStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+}
+
+if (luoguCookie) setCookieStatus(`已保存 ${maskCookie(luoguCookie)}`, 'ok');
 
 function setSyncStatus(text, kind) {
   el.luoguSyncStatus.textContent = text;
@@ -3868,12 +3976,16 @@ async function syncFromLuogu({ full = false, quiet = false } = {}) {
 
   if (!quiet) setSyncStatus('同步中…', 'muted');
 
-  const result = await syncLuogu(uid, {
+  const options = {
     maxPages: full ? 5 : 1,
     onProgress: (page, got) => {
       if (!quiet) setSyncStatus(`同步中… 第 ${page} 页，共 ${got} 条`, 'muted');
     }
-  });
+  };
+
+  const result = luoguCookie
+    ? await syncLuoguWithCookie(uid, luoguCookie, options)
+    : await syncLuogu(uid, options);
 
   const normalized = normalizeRecords(result.records || []);
   if (normalized.length > 0) {
@@ -3898,6 +4010,41 @@ el.bindLuogu.addEventListener('click', bindLuoguAccount);
 el.syncLuoguBtn.addEventListener('click', () => syncFromLuogu({ full: false }));
 el.luoguUid.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') bindLuoguAccount();
+});
+
+el.saveCookie.addEventListener('click', async () => {
+  const value = String(el.luoguCookie.value || '').trim();
+  if (value.length < 10) {
+    setCookieStatus('Cookie 太短，检查是不是只复制了一半', 'bad');
+    return;
+  }
+  if (!/(^|;\s*)__client_id=/.test(value) && !/(^|;\s*)_uid=/.test(value)) {
+    setCookieStatus('这串里没看到 __client_id 或 _uid，确认复制的是 Cookie 整行', 'bad');
+    return;
+  }
+
+  luoguCookie = value;
+  try {
+    localStorage.setItem(LUOGU_COOKIE_KEY, value);
+  } catch {
+    setCookieStatus('浏览器不允许写入本地存储', 'bad');
+    return;
+  }
+
+  el.luoguCookie.value = '';
+  setCookieStatus(`已保存 ${maskCookie(value)}，正在同步…`, 'ok');
+  await syncFromLuogu({ full: true });
+});
+
+el.clearCookie.addEventListener('click', () => {
+  luoguCookie = '';
+  try {
+    localStorage.removeItem(LUOGU_COOKIE_KEY);
+  } catch {
+    /* 忽略 */
+  }
+  el.luoguCookie.value = '';
+  setCookieStatus('Cookie 已从本机删除', 'muted');
 });
 
 /**

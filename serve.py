@@ -119,7 +119,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path != "/api/diagnose":
+        if path != "/api/diagnose" and path != "/api/luogu/records":
             self.send_error(404, "Not Found")
             return
 
@@ -137,6 +137,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 raise ValueError
         except (ValueError, UnicodeDecodeError):
             self._send_json(400, {"ok": False, "reason": "bad_json", "message": "请求体不是合法 JSON"})
+            return
+
+        if path == "/api/luogu/records":
+            uid = str(payload.get("uid") or "")
+            cookie = str(payload.get("cookie") or "")
+            try:
+                page = int(payload.get("page") or 1)
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                status, body = luogu_proxy.fetch_records_with_cookie(uid, page, cookie)
+            except Exception as exc:  # noqa: BLE001
+                status, body = 500, {"ok": False, "reason": "proxy_error", "message": str(exc)[:160]}
+            # 只记录结果，绝不打印 Cookie
+            print(f"[luogu] cookie uid={uid} page={page} ok={body.get('ok')} reason={body.get('reason', '-')}", flush=True)
+            self._send_json(status, body)
             return
 
         try:

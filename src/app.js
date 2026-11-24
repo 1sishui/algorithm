@@ -25,7 +25,7 @@ import {
   summarizeSubmissions,
   difficultyLabel
 } from './import/luogu.js';
-import { syncLuogu, fetchLuoguUser } from './import/luoguClient.js';
+import { syncLuogu, syncLuoguWithCookie, fetchLuoguUser } from './import/luoguClient.js';
 import {
   pushRecord,
   loadRecords,
@@ -94,7 +94,11 @@ const el = {
   luoguUid: $('luogu-uid'),
   bindLuogu: $('btn-bind-luogu'),
   syncLuoguBtn: $('btn-sync-luogu'),
-  luoguSyncStatus: $('luogu-sync-status')
+  luoguSyncStatus: $('luogu-sync-status'),
+  luoguCookie: $('luogu-cookie'),
+  saveCookie: $('btn-save-cookie'),
+  clearCookie: $('btn-clear-cookie'),
+  cookieStatus: $('cookie-status')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -603,17 +607,32 @@ el.clearLuogu.addEventListener('click', () => {
 
 const LUOGU_UID_KEY = 'algo-agent:luogu-uid';
 const LUOGU_NAME_KEY = 'algo-agent:luogu-name';
+const LUOGU_COOKIE_KEY = 'algo-agent:luogu-cookie';
 let luoguUid = '';
 let boundName = '';
+let luoguCookie = '';
 
 try {
   luoguUid = localStorage.getItem(LUOGU_UID_KEY) || '';
   boundName = localStorage.getItem(LUOGU_NAME_KEY) || '';
+  luoguCookie = localStorage.getItem(LUOGU_COOKIE_KEY) || '';
 } catch {
   luoguUid = '';
 }
 
 if (luoguUid) el.luoguUid.value = luoguUid;
+
+function maskCookie(value) {
+  if (!value) return '';
+  return `${value.slice(0, 10)}…（${value.length} 字符）`;
+}
+
+function setCookieStatus(text, kind) {
+  el.cookieStatus.textContent = text;
+  el.cookieStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+}
+
+if (luoguCookie) setCookieStatus(`已保存 ${maskCookie(luoguCookie)}`, 'ok');
 
 function setSyncStatus(text, kind) {
   el.luoguSyncStatus.textContent = text;
@@ -646,12 +665,16 @@ async function syncFromLuogu({ full = false, quiet = false } = {}) {
 
   if (!quiet) setSyncStatus('同步中…', 'muted');
 
-  const result = await syncLuogu(uid, {
+  const options = {
     maxPages: full ? 5 : 1,
     onProgress: (page, got) => {
       if (!quiet) setSyncStatus(`同步中… 第 ${page} 页，共 ${got} 条`, 'muted');
     }
-  });
+  };
+
+  const result = luoguCookie
+    ? await syncLuoguWithCookie(uid, luoguCookie, options)
+    : await syncLuogu(uid, options);
 
   const normalized = normalizeRecords(result.records || []);
   if (normalized.length > 0) {
@@ -676,6 +699,41 @@ el.bindLuogu.addEventListener('click', bindLuoguAccount);
 el.syncLuoguBtn.addEventListener('click', () => syncFromLuogu({ full: false }));
 el.luoguUid.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') bindLuoguAccount();
+});
+
+el.saveCookie.addEventListener('click', async () => {
+  const value = String(el.luoguCookie.value || '').trim();
+  if (value.length < 10) {
+    setCookieStatus('Cookie 太短，检查是不是只复制了一半', 'bad');
+    return;
+  }
+  if (!/(^|;\s*)__client_id=/.test(value) && !/(^|;\s*)_uid=/.test(value)) {
+    setCookieStatus('这串里没看到 __client_id 或 _uid，确认复制的是 Cookie 整行', 'bad');
+    return;
+  }
+
+  luoguCookie = value;
+  try {
+    localStorage.setItem(LUOGU_COOKIE_KEY, value);
+  } catch {
+    setCookieStatus('浏览器不允许写入本地存储', 'bad');
+    return;
+  }
+
+  el.luoguCookie.value = '';
+  setCookieStatus(`已保存 ${maskCookie(value)}，正在同步…`, 'ok');
+  await syncFromLuogu({ full: true });
+});
+
+el.clearCookie.addEventListener('click', () => {
+  luoguCookie = '';
+  try {
+    localStorage.removeItem(LUOGU_COOKIE_KEY);
+  } catch {
+    /* 忽略 */
+  }
+  el.luoguCookie.value = '';
+  setCookieStatus('Cookie 已从本机删除', 'muted');
 });
 
 /**
