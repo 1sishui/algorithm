@@ -2,6 +2,35 @@
 
 面向算法学习的导向型智能体（2026 校级学生科研项目）的第一个可运行版本。
 
+## 多人协作（Git）
+
+代码用 Git 管理。四个人的约定很简单：
+
+| 每天收工 | 双击 `存档.bat`（会自动提交并推送） |
+| 每天开工 | 先 `git pull` 拉一下别人的改动，再动手 |
+| 千万别传 | `.env`（里面有 key，已被 `.gitignore` 排除） |
+
+第一次把仓库放到网上（只需做一次）：
+
+1. 在 GitHub（或 Gitee）上新建一个**空仓库**，名字随意，例如 `algo-agent`，**不要**勾选“初始化 README”
+2. 复制仓库地址，在本文件夹打开 PowerShell，执行：
+
+```powershell
+git remote add origin https://github.com/你的用户名/algo-agent.git
+git push -u origin main
+```
+
+3. 弹出登录框就按提示登录一次，之后就不用再输了。
+
+队友第一次拿到代码：
+
+```powershell
+git clone https://github.com/你的用户名/algo-agent.git
+```
+
+> 提交者信息已经设成「熊廷俊 / xiongtingjun@example.com」，换成自己的真实邮箱只需：
+> `git config user.email "你的邮箱"`（只影响这个仓库）。
+
 ## 怎么跑（两种方式，任选）
 
 **方式一（最省事）：双击 `算法学习智能体-离线版.html`**
