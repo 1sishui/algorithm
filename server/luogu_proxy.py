@@ -37,8 +37,7 @@ def _ssl_context():
         return ssl.create_default_context()
 
 
-def _opener(cookie_str=""):
-    """构造带 cookie jar 的 opener：洛谷会先 302 下发 C3VK，再让你重新请求。"""
+def _make_jar(cookie_str=""):
     jar = http.cookiejar.CookieJar()
     for part in str(cookie_str or "").split(";"):
         part = part.strip()
@@ -54,29 +53,48 @@ def _opener(cookie_str=""):
                 "/", True, False, None, False, None, None, {}
             )
         )
+    return jar
+
+
+def _opener(cookie_str=""):
+    """构造带 cookie jar 的 opener：洛谷会先 302 下发 C3VK，再让你重新请求。"""
     return urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(jar),
+        urllib.request.HTTPCookieProcessor(_make_jar(cookie_str)),
         urllib.request.HTTPSHandler(context=_ssl_context()),
     )
 
 
-def _get(url, cookie="", accept="application/json", timeout=15):
-    """返回 (状态码, 文本, content-type)。401/403 会抛 PermissionError。"""
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": accept,
-            "x-luogu-type": "content-only",
-            "Referer": LUOGU_BASE + "/",
-        },
-    )
+def _get(url, cookie="", accept="application/json", timeout=15, ajax=True):
+    """返回 (状态码, 文本, content-type, 最终URL)。401/403 抛 PermissionError。"""
+    headers = {
+        "User-Agent": UA,
+        "Accept": accept,
+        "Referer": LUOGU_BASE + "/",
+    }
+    if ajax:
+        headers["x-luogu-type"] = "content-only"
+        headers["X-Requested-With"] = "XMLHttpRequest"
+
+    req = urllib.request.Request(url, headers=headers)
     try:
         with _opener(cookie).open(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode("utf-8", "ignore"), resp.headers.get("Content-Type", "")
+            return (
+                resp.status,
+                resp.read().decode("utf-8", "ignore"),
+                resp.headers.get("Content-Type", ""),
+                resp.geturl(),
+            )
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            raise PermissionError(exc.code) from exc
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", "ignore")[:300]
+            except Exception:  # noqa: BLE001
+                pass
+            err = PermissionError(exc.code)
+            err.body = body
+            err.url = exc.geturl() if hasattr(exc, "geturl") else url
+            raise err from exc
         raise
 
 
@@ -102,41 +120,93 @@ def _parse_payload(text):
     return _extract_injection(text)
 
 
+def _records_from(data):
+    box = (data.get("currentData") or {}).get("records") or data.get("records") or {}
+    return box.get("result") or [], box
+
+
 def fetch_records_with_cookie(uid, page=1, cookie="", timeout=15):
-    """用登录态读记录（洛谷的 /record/list 没有登录态会 401）。"""
+    """
+    用登录态读记录。洛谷的接口有两套形态，挨个试：
+      1) /record/list?_contentOnly=1  → 直接返回 JSON 片段
+      2) /record/list                 → 返回整页 HTML，数据藏在 _feInjection 里
+    两条都失败时，把上游的真实状态码带回去，方便判断到底卡在哪。
+    """
     uid = str(uid or "").strip()
     if not uid.isdigit():
         return 400, {"ok": False, "reason": "bad_uid", "message": "UID 应该是纯数字"}
     if not cookie or len(cookie) < 10:
         return 400, {"ok": False, "reason": "no_cookie", "message": "Cookie 为空"}
 
-    url = f"{LUOGU_BASE}/record/list?user={urllib.parse.quote(uid)}&page={int(page)}&_contentOnly=1"
+    attempts = []
+    base = f"{LUOGU_BASE}/record/list?user={urllib.parse.quote(uid)}&page={int(page)}"
+
+    # 方案一：JSON 片段
     try:
-        _status, text, _ctype = _get(url, cookie=cookie, timeout=timeout)
-    except PermissionError:
-        return 200, {"ok": False, "reason": "login_required", "message": "洛谷返回 401：Cookie 无效或已过期，请重新复制"}
+        status, text, ctype, final = _get(base + "&_contentOnly=1", cookie=cookie, timeout=timeout)
+        data = _parse_payload(text)
+        if data:
+            records, box = _records_from(data)
+            if records:
+                return 200, {
+                    "ok": True,
+                    "records": records,
+                    "perPage": box.get("perPage") or 20,
+                    "count": box.get("count"),
+                    "page": int(page),
+                    "via": "json",
+                }
+            attempts.append(f"JSON接口返回 0 条（HTTP {status}）")
+        else:
+            attempts.append(f"JSON接口返回的不是数据（HTTP {status}，{ctype}）")
+    except PermissionError as exc:
+        snippet = _plain(getattr(exc, "body", ""))
+        attempts.append(f"JSON接口 HTTP {exc}" + (f"：{snippet}" if snippet else ""))
     except socket.timeout:
-        return 200, {"ok": False, "reason": "timeout", "message": "洛谷响应超时"}
+        attempts.append("JSON接口 超时")
     except Exception as exc:  # noqa: BLE001
-        return 200, {"ok": False, "reason": "network", "message": f"连不上洛谷：{exc}"}
+        attempts.append(f"JSON接口 出错：{str(exc)[:80]}")
 
-    data = _parse_payload(text)
-    if not data:
-        return 200, {"ok": False, "reason": "login_required", "message": "没解析出记录：Cookie 可能已过期"}
-
-    box = (data.get("currentData") or {}).get("records") or data.get("records") or {}
-    records = box.get("result") or []
-    if not records:
-        return 200, {
-            "ok": False,
-            "reason": "empty",
-            "message": "记录为空：可能是 UID 不对，或这个账号没有提交记录",
-        }
+    # 方案二：整页 HTML + 内嵌数据
+    try:
+        status, text, ctype, final = _get(base, cookie=cookie, accept="text/html", timeout=timeout, ajax=False)
+        data = _extract_injection(text)
+        if data:
+            records, box = _records_from(data)
+            if records:
+                return 200, {
+                    "ok": True,
+                    "records": records,
+                    "perPage": box.get("perPage") or 20,
+                    "count": box.get("count"),
+                    "page": int(page),
+                    "via": "html",
+                }
+            attempts.append("页面能打开，但里面没有记录数据")
+        else:
+            attempts.append(f"页面没有内嵌数据（HTTP {status}，{len(text)} 字节）")
+    except PermissionError as exc:
+        snippet = _plain(getattr(exc, "body", ""))
+        attempts.append(f"页面接口 HTTP {exc}" + (f"：{snippet}" if snippet else ""))
+    except socket.timeout:
+        attempts.append("页面接口 超时")
+    except Exception as exc:  # noqa: BLE001
+        attempts.append(f"页面接口 出错：{str(exc)[:80]}")
 
     return 200, {
-        "ok": True,
-        "records": records,
-        "perPage": box.get("perPage") or 20,
-        "count": box.get("count"),
-        "page": int(page),
+        "ok": False,
+        "reason": "login_required",
+        "message": "两种请求都没拿到记录：" + "；".join(attempts),
+        "attempts": attempts,
+        "detail": "；".join(attempts)[:400],
     }
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _plain(text):
+    """把 HTML 片段压成一行短文本，方便显示在状态栏里。"""
+    if not text:
+        return ""
+    cleaned = _TAG.sub(" ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:80]

@@ -81,6 +81,7 @@ const el = {
   luoguSummary: $('luogu-summary'),
   cookieClientId: $('cookie-client-id'),
   cookieUid: $('cookie-uid'),
+  cookieExtra: $('cookie-extra'),
   saveCookie: $('btn-save-cookie'),
   syncLuoguBtn: $('btn-sync-luogu'),
   clearCookie: $('btn-clear-cookie'),
@@ -554,9 +555,20 @@ function readCookieForm() {
   const id = String(el.cookieClientId.value || '')
     .trim()
     .replace(/^__client_id\s*=\s*/, '');
-  const uid = String(el.cookieUid.value || '')
+  let uid = String(el.cookieUid.value || '')
     .trim()
     .replace(/^_uid\s*=\s*/, '');
+  const extra = String(el.cookieExtra.value || '').trim();
+
+  // 高级模式：整行 Cookie 优先，UID 从里面兜底解析
+  if (extra) {
+    if (!uid) {
+      const match = extra.match(/(?:^|;\s*)_uid=(\d+)/);
+      if (match) uid = match[1];
+    }
+    if (!/^\d+$/.test(uid)) return { error: '请填写 _uid（或用整行 Cookie 里带 _uid）' };
+    return { id: id || '（整行）', uid, cookie: extra };
+  }
 
   if (!id) return { error: '请填写 __client_id 的值' };
   if (!/^\d+$/.test(uid)) return { error: '_uid 应该是纯数字（个人主页 /user/ 后面那串）' };

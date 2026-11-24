@@ -522,6 +522,17 @@ details pre { margin-top: 6px; }
   padding: 7px 10px;
 }
 
+.cookie-extra { margin: 0 0 10px; }
+.cookie-extra > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+#cookie-extra {
+  width: 100%;
+  height: 56px;
+  resize: vertical;
+  margin-top: 6px;
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+}
+
 </style>
 </head>
 <body>
@@ -610,6 +621,10 @@ details pre { margin-top: 6px; }
           <input id="cookie-uid" inputmode="numeric" placeholder="你的数字 UID" />
         </label>
       </div>
+      <details class="cookie-extra">
+        <summary>还有别的 Cookie？整行粘这里（可选）</summary>
+        <textarea id="cookie-extra" spellcheck="false" placeholder="例如：__client_id=...; _uid=...; 其他名字=..."></textarea>
+      </details>
       <div class="mycode-actions">
         <button id="btn-save-cookie" class="primary">保存并同步</button>
         <button id="btn-sync-luogu">立即同步</button>
@@ -3235,6 +3250,7 @@ const el = {
   luoguSummary: $('luogu-summary'),
   cookieClientId: $('cookie-client-id'),
   cookieUid: $('cookie-uid'),
+  cookieExtra: $('cookie-extra'),
   saveCookie: $('btn-save-cookie'),
   syncLuoguBtn: $('btn-sync-luogu'),
   clearCookie: $('btn-clear-cookie'),
@@ -3708,9 +3724,20 @@ function readCookieForm() {
   const id = String(el.cookieClientId.value || '')
     .trim()
     .replace(/^__client_id\s*=\s*/, '');
-  const uid = String(el.cookieUid.value || '')
+  let uid = String(el.cookieUid.value || '')
     .trim()
     .replace(/^_uid\s*=\s*/, '');
+  const extra = String(el.cookieExtra.value || '').trim();
+
+  // 高级模式：整行 Cookie 优先，UID 从里面兜底解析
+  if (extra) {
+    if (!uid) {
+      const match = extra.match(/(?:^|;\s*)_uid=(\d+)/);
+      if (match) uid = match[1];
+    }
+    if (!/^\d+$/.test(uid)) return { error: '请填写 _uid（或用整行 Cookie 里带 _uid）' };
+    return { id: id || '（整行）', uid, cookie: extra };
+  }
 
   if (!id) return { error: '请填写 __client_id 的值' };
   if (!/^\d+$/.test(uid)) return { error: '_uid 应该是纯数字（个人主页 /user/ 后面那串）' };
