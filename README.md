@@ -50,9 +50,10 @@ git clone https://github.com/你的用户名/algo-agent.git
 
 ## 现在能做什么
 
-- 选择算法（快速排序 / 冒泡排序 / 插入排序），生成可视化过程
+- 选择算法（快速排序 / 冒泡排序 / 插入排序 / 二叉树前中后序遍历），生成可视化过程
 - 播放、暂停、上一步、下一步、拖进度条、调速度（键盘：空格 / ← / →）
 - 自定义输入数组（逗号分隔，最多 60 个元素）
+- 树遍历会显示：节点按访问顺序变绿、当前节点高亮、栈里的内容实时更新
 - 点左侧知识图谱的节点切换知识点；没有模板的节点会提示“建设中”
 - 右侧「错误诊断」：粘贴一段错误代码，返回结构化的诊断结果
 - 右侧「理解度评估」：六维演示数据，播放完会小幅变化
@@ -62,6 +63,7 @@ git clone https://github.com/你的用户名/algo-agent.git
 | 模块 | 状态 |
 |---|---|
 | 执行器 / 渲染器分离 | ✅ 真实实现，后面所有算法照这个套路加 |
+| 可视化：数组 / 二叉树 | ✅ 两套渲染器，算法用 `meta.view` 声明用哪个，界面自动切换 |
 | 播放器、进度、键盘控制 | ✅ 真实实现 |
 | 知识图谱 | 🟡 12 大类已齐，44 个节点（目标 80+），掌握度是假数据 |
 | 错误诊断 | ✅ 已接大模型（`serve.py` 代理），无 key / 无网络时自动降级到本地规则，界面会标明来源 |
@@ -156,14 +158,18 @@ algo-agent/
 │  ├─ core/player.js         # 播放器：只管“第几步”
 │  ├─ algorithms/
 │  │  ├─ registry.js         # 注册表：加算法只改这里
-│  │  └─ sort/{quick,bubble,insertion}.js   # 执行器：纯函数，产出步骤数组
-│  ├─ render/arrayBars.js    # 渲染器：只认步骤数组，不认识算法
+│  │  ├─ sort/{quick,bubble,insertion}.js   # 执行器：纯函数，产出步骤数组
+│  │  └─ tree/{model,traversal}.js          # 二叉树模型与前/中/后序遍历
+│  ├─ render/
+│  │  ├─ arrayBars.js        # 数组柱状图渲染器
+│  │  └─ treeView.js         # 树渲染器（SVG，中序定 x、深度定 y）
 │  ├─ knowledge/graph.js     # 知识图谱 + 推荐逻辑
 │  ├─ diagnosis/rules.js     # 本地规则（降级用，也是接口参照）
 │  ├─ llm/client.js          # 调 /api/diagnose，失败静默降级
 │  └─ ui/{mastery,diagnosisPanel}.js
 ├─ tools/build-offline.mjs   # 重新生成离线版（需要 Node）
-├─ test/engines.test.mjs     # 执行器自测：300+ 用例
+├─ test/engines.test.mjs     # 排序执行器自测：300+ 用例
+├─ test/tree.test.mjs        # 遍历顺序自测
 └─ BACKLOG.md                # 任务看板
 ```
 
