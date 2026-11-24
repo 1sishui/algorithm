@@ -84,6 +84,12 @@
         洛谷没有开放接口，所以走「你自己导出、本地导入」：数据只存在你的浏览器里，不会上传到任何服务器。<br />
         步骤：登录洛谷 → 按 <b>F12</b> 打开 Console → 粘贴下面脚本回车 → 会下载 <code>luogu-records.json</code> → 回到这里选文件导入。
       </p>
+      <div class="bind-row">
+        <input id="luogu-uid" inputmode="numeric" placeholder="洛谷 UID（个人主页 https://www.luogu.com.cn/user/123456 里的数字）" />
+        <button id="btn-bind-luogu" class="primary">绑定并同步</button>
+        <button id="btn-sync-luogu">立即同步</button>
+        <span id="luogu-sync-status" class="muted"></span>
+      </div>
       <div class="snippet-wrap">
         <pre id="luogu-snippet" class="snippet"></pre>
         <button id="btn-copy-snippet">复制脚本</button>

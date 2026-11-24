@@ -17,6 +17,7 @@ import socketserver
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 
@@ -26,6 +27,7 @@ VERSION = "0.2"
 
 sys.path.insert(0, ROOT)
 from server import llm_proxy  # noqa: E402
+from server import luogu_proxy  # noqa: E402
 
 
 def mask_key(key):
@@ -88,6 +90,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         if path == "/api/health":
             self._send_json(200, health_payload(with_probe="probe=1" in query))
+            return
+        if path == "/api/luogu":
+            params = urllib.parse.parse_qs(query)
+            uid = (params.get("uid") or [""])[0]
+            try:
+                page = int((params.get("page") or ["1"])[0])
+            except ValueError:
+                page = 1
+            try:
+                status, body = luogu_proxy.fetch_records(uid, page)
+            except Exception as exc:  # noqa: BLE001
+                status, body = 500, {"ok": False, "reason": "proxy_error", "message": str(exc)[:160]}
+            print(f"[luogu] uid={uid} page={page} ok={body.get('ok')} reason={body.get('reason', '-')}", flush=True)
+            self._send_json(status, body)
             return
         super().do_GET()
 

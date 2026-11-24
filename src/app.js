@@ -25,6 +25,7 @@ import {
   summarizeSubmissions,
   difficultyLabel
 } from './import/luogu.js';
+import { syncLuogu } from './import/luoguClient.js';
 import {
   pushRecord,
   loadRecords,
@@ -89,7 +90,11 @@ const el = {
   parseLuogu: $('btn-parse-luogu'),
   clearLuogu: $('btn-clear-luogu'),
   luoguStatus: $('luogu-status'),
-  luoguSummary: $('luogu-summary')
+  luoguSummary: $('luogu-summary'),
+  luoguUid: $('luogu-uid'),
+  bindLuogu: $('btn-bind-luogu'),
+  syncLuoguBtn: $('btn-sync-luogu'),
+  luoguSyncStatus: $('luogu-sync-status')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -594,6 +599,86 @@ el.clearLuogu.addEventListener('click', () => {
   setLuoguStatus('已清除导入数据', 'muted');
 });
 
+/* ---------------- 洛谷账号绑定（按 UID 定时同步） ---------------- */
+
+const LUOGU_UID_KEY = 'algo-agent:luogu-uid';
+let luoguUid = '';
+try {
+  luoguUid = localStorage.getItem(LUOGU_UID_KEY) || '';
+} catch {
+  luoguUid = '';
+}
+
+if (luoguUid) el.luoguUid.value = luoguUid;
+
+function setSyncStatus(text, kind) {
+  el.luoguSyncStatus.textContent = text;
+  el.luoguSyncStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+}
+
+function mergeSubmissions(incoming) {
+  const map = new Map();
+  for (const record of [...submissions, ...incoming]) {
+    map.set(record.id || `${record.pid}-${record.submittedAt}`, record);
+  }
+  submissions = [...map.values()]
+    .sort((a, b) => new Date(a.submittedAt || 0) - new Date(b.submittedAt || 0))
+    .slice(-3000);
+}
+
+async function syncFromLuogu({ full = false, quiet = false } = {}) {
+  const uid = String(el.luoguUid.value || '').trim();
+  if (!/^\d+$/.test(uid)) {
+    if (!quiet) setSyncStatus('UID 应该是纯数字（个人主页网址里那一串）', 'bad');
+    return;
+  }
+
+  luoguUid = uid;
+  try {
+    localStorage.setItem(LUOGU_UID_KEY, uid);
+  } catch {
+    /* 忽略 */
+  }
+
+  if (!quiet) setSyncStatus('同步中…', 'muted');
+
+  const result = await syncLuogu(uid, {
+    maxPages: full ? 5 : 1,
+    onProgress: (page, got) => {
+      if (!quiet) setSyncStatus(`同步中… 第 ${page} 页，共 ${got} 条`, 'muted');
+    }
+  });
+
+  const normalized = normalizeRecords(result.records || []);
+  if (normalized.length > 0) {
+    mergeSubmissions(normalized);
+    saveSubmissions();
+    renderLuoguSummary();
+    refreshFeatures();
+  }
+
+  if (!result.ok) {
+    const message = (result.error && result.error.message) || '同步失败';
+    setSyncStatus(`${message}${normalized.length ? `（已拿到 ${normalized.length} 条）` : ''}`, 'bad');
+    return;
+  }
+
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  setSyncStatus(`已同步 ${normalized.length} 条 · ${time}`, 'ok');
+}
+
+el.bindLuogu.addEventListener('click', () => syncFromLuogu({ full: true }));
+el.syncLuoguBtn.addEventListener('click', () => syncFromLuogu({ full: false }));
+el.luoguUid.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') syncFromLuogu({ full: true });
+});
+
+// 每 10 分钟静默拉一次第一页（只看有没有新提交），页面切到后台时跳过
+setInterval(() => {
+  if (!luoguUid || document.visibilityState !== 'visible') return;
+  syncFromLuogu({ full: false, quiet: true });
+}, 10 * 60 * 1000);
+
 /* ---------------- 知识图谱侧边栏 ---------------- */
 
 function renderKnowledgeGraph() {
@@ -749,6 +834,11 @@ renderRuns();
 renderLuoguSummary();
 refreshFeatures();
 build();
+
+// 已经绑定过 UID 的，启动后静默同步一次第一页
+if (luoguUid) {
+  setTimeout(() => syncFromLuogu({ full: false, quiet: true }), 2500);
+}
 diagnosisView.show({
   result: diagnose('int a[10]; for (int i = 0; i <= n; i++) { a[i] = 0; }'),
   source: 'rules'

@@ -31,6 +31,7 @@ const MODULES = [
   'src/user/history.js',
   'src/assessment/features.js',
   'src/import/luogu.js',
+  'src/import/luoguClient.js',
   'src/assessment/submissions.js',
   'src/ui/diagnosisPanel.js',
   'src/algorithms/sort/quick.js',
