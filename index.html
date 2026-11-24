@@ -77,6 +77,26 @@
         <ol id="history-list"></ol>
       </div>
     </details>
+
+    <details class="mycode" id="luogu">
+      <summary>导入洛谷做题记录 → 分析真实提交数据</summary>
+      <p class="mycode-hint">
+        洛谷没有开放接口，所以走「你自己导出、本地导入」：数据只存在你的浏览器里，不会上传到任何服务器。<br />
+        步骤：登录洛谷 → 按 <b>F12</b> 打开 Console → 粘贴下面脚本回车 → 会下载 <code>luogu-records.json</code> → 回到这里选文件导入。
+      </p>
+      <div class="snippet-wrap">
+        <pre id="luogu-snippet" class="snippet"></pre>
+        <button id="btn-copy-snippet">复制脚本</button>
+      </div>
+      <div class="mycode-actions">
+        <input type="file" id="luogu-file" accept=".json,application/json" />
+        <button id="btn-parse-luogu" class="primary">解析粘贴内容</button>
+        <button id="btn-clear-luogu">清除数据</button>
+        <span id="luogu-status" class="muted"></span>
+      </div>
+      <textarea id="luogu-paste" spellcheck="false" placeholder="也可以把 luogu-records.json 的内容直接粘在这里，再点「解析粘贴内容」"></textarea>
+      <div id="luogu-summary" class="luogu-summary"></div>
+    </details>
   </main>
 
   <aside class="panel right">

@@ -440,6 +440,48 @@ details pre { margin-top: 6px; }
 .gnode.visited circle { fill: #1f5138; stroke: var(--green); }
 .gnode.current circle { fill: #7c2d12; stroke: var(--amber); stroke-width: 3; }
 
+/* ---------- 洛谷导入 ---------- */
+.snippet-wrap { position: relative; margin-bottom: 10px; }
+.snippet {
+  margin: 0;
+  max-height: 150px;
+  overflow: auto;
+  background: #0a1020;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #9fb3cc;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.snippet-wrap button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+#luogu-file { color: var(--muted); font-size: 12px; }
+#luogu-paste {
+  width: 100%;
+  height: 70px;
+  resize: vertical;
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+  margin-top: 8px;
+}
+.luogu-summary { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.luogu-stats { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 10px; }
+.luogu-stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+.diff-bars { display: flex; flex-direction: column; gap: 4px; }
+.diff-row { display: flex; align-items: center; gap: 8px; }
+.diff-row .lvl { width: 108px; flex: none; }
+.diff-row .track { flex: 1; height: 7px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.diff-row .fill { display: block; height: 100%; background: linear-gradient(90deg, #2563eb, var(--blue)); }
+.diff-row .cnt { width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+
 </style>
 </head>
 <body>
@@ -512,6 +554,26 @@ details pre { margin-top: 6px; }
         <div id="history-stats" class="history-stats"></div>
         <ol id="history-list"></ol>
       </div>
+    </details>
+
+    <details class="mycode" id="luogu">
+      <summary>导入洛谷做题记录 → 分析真实提交数据</summary>
+      <p class="mycode-hint">
+        洛谷没有开放接口，所以走「你自己导出、本地导入」：数据只存在你的浏览器里，不会上传到任何服务器。<br />
+        步骤：登录洛谷 → 按 <b>F12</b> 打开 Console → 粘贴下面脚本回车 → 会下载 <code>luogu-records.json</code> → 回到这里选文件导入。
+      </p>
+      <div class="snippet-wrap">
+        <pre id="luogu-snippet" class="snippet"></pre>
+        <button id="btn-copy-snippet">复制脚本</button>
+      </div>
+      <div class="mycode-actions">
+        <input type="file" id="luogu-file" accept=".json,application/json" />
+        <button id="btn-parse-luogu" class="primary">解析粘贴内容</button>
+        <button id="btn-clear-luogu">清除数据</button>
+        <span id="luogu-status" class="muted"></span>
+      </div>
+      <textarea id="luogu-paste" spellcheck="false" placeholder="也可以把 luogu-records.json 的内容直接粘在这里，再点「解析粘贴内容」"></textarea>
+      <div id="luogu-summary" class="luogu-summary"></div>
     </details>
   </main>
 
@@ -2371,6 +2433,347 @@ function describe(record) {
 return { STORAGE_KEY, MAX_RECORDS, pushRecord, summarize, loadRecords, saveRecords, clearAll, serialize, groupBy, describe };
 })();
 
+/* ===== src/import/luogu.js ===== */
+const __m_import_luogu = (function () {
+/**
+ * 洛谷做题记录：解析与统计
+ *
+ * 为什么要“导入”而不是“自动同步”：
+ *   洛谷没有公开的提交记录 API，跨域也拿不到登录态数据。
+ *   所以走的是「用户在自己浏览器里导出 → 本地导入」的路子：
+ *   数据始终在用户手里，不需要把账号 Cookie 交给任何服务器。
+ *
+ * 解析器故意写得很宽容：不同页面/版本字段名不一样（status/verdict、pid/problem.pid……），
+ * 只要是“一条提交一个对象”的数组，都能尽量认出来。
+ */
+
+/** 洛谷状态码 → 统一判定 */
+const STATUS_MAP = {
+  0: '等待中',
+  1: '等待中',
+  2: '编译错误',
+  3: '输出超限',
+  4: '内存超限',
+  5: '超时',
+  6: '运行错误',
+  7: '答案错误',
+  12: '通过',
+  14: '未通过'
+};
+
+const AC_LABELS = new Set(['通过', 'Accepted', 'AC', 'ac']);
+
+function pick(obj, keys, fallback = undefined) {
+  for (const key of keys) {
+    const value = key.split('.').reduce((acc, part) => (acc == null ? acc : acc[part]), obj);
+    if (value !== undefined && value !== null) return value;
+  }
+  return fallback;
+}
+
+/** 把一条原始记录整理成统一结构 */
+function normalizeRecord(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const pid = String(pick(raw, ['problem.pid', 'pid', 'problemId'], '')).trim();
+  const statusValue = pick(raw, ['status', 'verdict', 'result'], '');
+  const status = STATUS_MAP[statusValue] || String(statusValue || '未知');
+
+  const timeRaw = pick(raw, ['submitTime', 'time', 'createTime', 'timestamp'], null);
+  let submittedAt = null;
+  if (typeof timeRaw === 'number') {
+    // 秒级时间戳自动换算
+    submittedAt = new Date(timeRaw < 1e12 ? timeRaw * 1000 : timeRaw).toISOString();
+  } else if (typeof timeRaw === 'string' && timeRaw.length > 0) {
+    const parsed = new Date(timeRaw);
+    submittedAt = Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+
+  if (!pid && !submittedAt) return null;
+
+  return {
+    id: String(pick(raw, ['id', 'rid'], '') || `${pid}-${submittedAt || ''}`),
+    pid,
+    title: String(pick(raw, ['problem.title', 'title', 'problemName'], '')).trim(),
+    difficulty: Number(pick(raw, ['problem.difficulty', 'difficulty'], 0)) || 0,
+    status,
+    accepted: AC_LABELS.has(status),
+    submittedAt,
+    language: String(pick(raw, ['language', 'lang', 'languageName'], '')).trim()
+  };
+}
+
+function normalizeRecords(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  const seen = new Set();
+  const out = [];
+
+  for (const raw of rawList) {
+    const record = normalizeRecord(raw);
+    if (!record) continue;
+    const key = record.id || `${record.pid}-${record.submittedAt}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(record);
+  }
+
+  return out.sort((a, b) => new Date(a.submittedAt || 0) - new Date(b.submittedAt || 0));
+}
+
+const DIFFICULTY_LABELS = {
+  0: '未评定',
+  1: '入门',
+  2: '普及−',
+  3: '普及/提高−',
+  4: '普及+/提高',
+  5: '提高+/省选−',
+  6: '省选/NOI−',
+  7: 'NOI/NOI+/CTSC'
+};
+
+function difficultyLabel(level) {
+  return DIFFICULTY_LABELS[level] || `难度 ${level}`;
+}
+
+/** 导入后给用户看的概览 */
+function summarizeSubmissions(records) {
+  const list = records || [];
+  const problems = new Map();
+
+  for (const record of list) {
+    const key = record.pid || record.title || record.id;
+    if (!problems.has(key)) problems.set(key, { attempts: 0, accepted: false, difficulty: record.difficulty || 0 });
+    const item = problems.get(key);
+    item.attempts += 1;
+    if (record.accepted) item.accepted = true;
+    if (!item.difficulty && record.difficulty) item.difficulty = record.difficulty;
+  }
+
+  const solved = [...problems.values()].filter((item) => item.accepted).length;
+  const histogram = new Array(8).fill(0);
+  for (const item of problems.values()) {
+    const level = Math.max(0, Math.min(7, Number(item.difficulty) || 0));
+    histogram[level] += 1;
+  }
+
+  const dates = list.map((r) => r.submittedAt).filter(Boolean).sort();
+  const acceptedCount = list.filter((r) => r.accepted).length;
+
+  return {
+    submissions: list.length,
+    problems: problems.size,
+    solved,
+    acceptRate: list.length ? acceptedCount / list.length : 0,
+    firstAt: dates[0] || null,
+    lastAt: dates[dates.length - 1] || null,
+    histogram,
+    languages: [...new Set(list.map((r) => r.language).filter(Boolean))]
+  };
+}
+/**
+ * 给用户在洛谷页面控制台里跑的抓取脚本。
+ * 放在 JS 常量里而不是直接写进 HTML，避免 < 之类的字符被当成标签。
+ * 它做三件事：读自己的 uid → 分页拉提交记录 → 下载成 luogu-records.json。
+ */
+const BOOKMARKLET = `(async () => {
+  const data = window._feInjection ? JSON.parse(decodeURIComponent(window._feInjection)) : null;
+  const uid = (data && data.currentData && data.currentData.user && data.currentData.user.uid)
+    || location.pathname.split('/').filter(Boolean).pop();
+  const all = [];
+  for (let page = 1; page <= 30; page++) {
+    const res = await fetch('/record/list?user=' + uid + '&page=' + page + '&_contentOnly=1', {
+      headers: { 'x-luogu-type': 'content-only' }
+    });
+    const json = await res.json();
+    const box = (json.currentData && json.currentData.records) || json.records || json;
+    const list = (box && box.result) || [];
+    if (!list.length) break;
+    all.push(...list);
+    console.log('已抓取第 ' + page + ' 页，累计 ' + all.length + ' 条');
+    if (list.length < ((box && box.perPage) || 20)) break;
+  }
+  const blob = new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'luogu-records.json';
+  a.click();
+  console.log('完成，共 ' + all.length + ' 条，文件已开始下载');
+})();`;
+
+const IMPORT_HINT = '在洛谷任意页面按 F12 → Console，粘贴上面这段脚本回车，会下载一个 luogu-records.json。';
+
+return { STATUS_MAP, normalizeRecord, normalizeRecords, difficultyLabel, summarizeSubmissions, BOOKMARKLET, IMPORT_HINT };
+})();
+
+/* ===== src/assessment/submissions.js ===== */
+const __m_assessment_submissions = (function () {
+/**
+ * 由洛谷做题记录推算六维（数据版）
+ *
+ * 与 features.js（由本机运行记录推算）是两套口径：
+ *   - 运行记录看的是「在可视化里练算法」的行为
+ *   - 洛谷记录看的是「真实做题」的行为
+ * 有洛谷数据时优先用它，因为它更接近申请书里说的“提交记录”。
+ *
+ * 同样声明：这些是行为代理指标，不是理解度真值。
+ */
+const { difficultyLabel } = __m_import_luogu;
+
+function clamp(value, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function entropy(counts) {
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total === 0) return 0;
+  return counts.reduce((sum, count) => {
+    if (count <= 0) return sum;
+    const p = count / total;
+    return sum - p * Math.log(p);
+  }, 0);
+}
+
+function median(nums) {
+  if (!nums.length) return 0;
+  const sorted = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** 按题目聚合：每题提交了几次、是否通过、难度多少 */
+function groupByProblem(records) {
+  const map = new Map();
+
+  for (const record of records || []) {
+    const key = record.pid || record.title || record.id;
+    if (!key) continue;
+    if (!map.has(key)) {
+      map.set(key, {
+        pid: key,
+        title: record.title || key,
+        difficulty: Number(record.difficulty) || 0,
+        attempts: 0,
+        accepted: false,
+        firstAcceptedAt: null,
+        lastAt: null
+      });
+    }
+    const item = map.get(key);
+    item.attempts += 1;
+    if (!item.difficulty && record.difficulty) item.difficulty = record.difficulty;
+    if (record.accepted && !item.accepted) {
+      item.accepted = true;
+      item.firstAcceptedAt = record.submittedAt;
+    }
+    if (record.submittedAt) item.lastAt = record.submittedAt;
+  }
+
+  return [...map.values()];
+}
+
+function computeSubmissionFeatures(records) {
+  const list = (records || []).filter((record) => record && (record.pid || record.title));
+  if (list.length === 0) return null;
+
+  const problems = groupByProblem(list);
+  const solved = problems.filter((item) => item.accepted);
+  const levels = new Array(8).fill(0);
+  for (const item of problems) {
+    const level = Math.max(0, Math.min(7, Number(item.difficulty) || 0));
+    levels[level] += 1;
+  }
+
+  const dims = {};
+
+  /* 1. 错误修正：每题通过之前提交了几次 */
+  {
+    const scores = problems.map((item) => {
+      if (!item.accepted) return 15;
+      return clamp(100 - 18 * (item.attempts - 1), 20, 100);
+    });
+    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const neverSolved = problems.length - solved.length;
+
+    dims.fix = {
+      value: Math.round(avg),
+      detail: `洛谷：共 ${problems.length} 题，通过 ${solved.length} 题${neverSolved ? `，未通过 ${neverSolved} 题` : ''}；按“首次通过前的提交次数”折算`
+    };
+  }
+
+  /* 2. 题型迁移：解决率 × 难度覆盖 */
+  {
+    const solveRate = problems.length ? solved.length / problems.length : 0;
+    const usedLevels = levels.filter((count) => count > 0).length;
+    const spread = usedLevels / 8;
+
+    dims.transfer = {
+      value: Math.round(clamp(100 * solveRate * (0.6 + 0.4 * spread))),
+      detail: `洛谷：解决率 ${(solveRate * 100).toFixed(0)}%，覆盖 ${usedLevels} 个难度层`
+    };
+  }
+
+  /* 3. 思路多样性：难度层数 + 语言种类 */
+  {
+    const usedLevels = levels.filter((count) => count > 0).length;
+    const languages = new Set(list.map((r) => r.language).filter(Boolean)).size || 1;
+    const value = 100 * (0.7 * (usedLevels / 8) + 0.3 * Math.min(1, languages / 3));
+
+    dims.diversity = {
+      value: Math.round(clamp(value)),
+      detail: `洛谷：覆盖 ${usedLevels} 个难度层、${languages} 种语言`
+    };
+  }
+
+  /* 4. 尝试模式：每题提交次数的中位数（1 次像抄模板，2–4 次是正常迭代） */
+  {
+    const attempts = problems.map((item) => item.attempts);
+    const mid = median(attempts);
+    let value;
+    if (mid <= 3) value = 45 + 25 * (mid - 1);
+    else value = Math.max(50, 95 - 10 * (mid - 3));
+
+    dims.attempt = {
+      value: Math.round(clamp(value)),
+      detail: `洛谷：每题平均提交 ${(list.length / problems.length).toFixed(1)} 次，中位数 ${mid} 次`
+    };
+  }
+
+  /* 5. 覆盖均衡：练习量在难度层上的分布熵 */
+  {
+    const h = entropy(levels);
+    const maxH = Math.log(8);
+    dims.coverage = {
+      value: Math.round(clamp((h / maxH) * 100)),
+      detail: `洛谷：练过 ${levels.filter((c) => c > 0).length} 个难度层，分布${h / maxH > 0.7 ? '较均衡' : '集中在少数几层'}`
+    };
+  }
+
+  /* 6. 难度爬升：后三分之一与前三分之一的平均难度差 */
+  {
+    const ordered = [...problems].sort(
+      (a, b) => new Date(a.firstAcceptedAt || a.lastAt || 0) - new Date(b.firstAcceptedAt || b.lastAt || 0)
+    );
+    if (ordered.length < 3) {
+      dims.slope = { value: null, detail: '洛谷：至少需要 3 道题的记录才能看趋势' };
+    } else {
+      const third = Math.max(1, Math.floor(ordered.length / 3));
+      const avg = (arr) => arr.reduce((sum, item) => sum + (item.difficulty || 0), 0) / arr.length;
+      const early = avg(ordered.slice(0, third));
+      const late = avg(ordered.slice(-third));
+      const delta = late - early;
+
+      dims.slope = {
+        value: Math.round(clamp(50 + 20 * delta)),
+        detail: `洛谷：早期平均难度 ${early.toFixed(1)}（${difficultyLabel(Math.round(early))}）→ 近期 ${late.toFixed(1)}`
+      };
+    }
+  }
+
+  return { dims, sample: list.length, problems: problems.length, source: '洛谷' };
+}
+return { groupByProblem, computeSubmissionFeatures };
+})();
+
 /* ===== src/ui/diagnosisPanel.js ===== */
 const __m_ui_diagnosisPanel = (function () {
 /**
@@ -2698,6 +3101,8 @@ const { createDiagnosisView } = __m_ui_diagnosisPanel;
 const { createMastery } = __m_ui_mastery;
 const { runUserCode, TEMPLATE } = __m_user_runner;
 const { computeFeatures } = __m_assessment_features;
+const { computeSubmissionFeatures } = __m_assessment_submissions;
+const { BOOKMARKLET, normalizeRecords, summarizeSubmissions, difficultyLabel } = __m_import_luogu;
 const { pushRecord, loadRecords, saveRecords, clearAll, summarize, serialize, describe, groupBy } = __m_user_history;
 
 const $ = (id) => document.getElementById(id);
@@ -2744,7 +3149,16 @@ const el = {
   historyList: $('history-list'),
   historyStats: $('history-stats'),
   exportRuns: $('btn-export-runs'),
-  clearRuns: $('btn-clear-runs')
+  clearRuns: $('btn-clear-runs'),
+  luogu: $('luogu'),
+  luoguSnippet: $('luogu-snippet'),
+  copySnippet: $('btn-copy-snippet'),
+  luoguFile: $('luogu-file'),
+  luoguPaste: $('luogu-paste'),
+  parseLuogu: $('btn-parse-luogu'),
+  clearLuogu: $('btn-clear-luogu'),
+  luoguStatus: $('luogu-status'),
+  luoguSummary: $('luogu-summary')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -2771,16 +3185,27 @@ const catalog = algorithms.map((algo) => ({
 }));
 
 function refreshFeatures() {
-  const result = computeFeatures(runs, catalog);
-  mastery.render(result.dims);
+  const runResult = computeFeatures(runs, catalog);
+  const subResult = computeSubmissionFeatures(submissions);
 
-  if (result.sample === 0) {
-    el.masterySource.textContent = '还没有运行记录，先跑几次再看';
-    return;
+  // 有洛谷数据就优先用洛谷口径，没有的维度回退到运行记录
+  const dims = {};
+  for (const key of Object.keys(runResult.dims)) {
+    const fromSub = subResult && subResult.dims ? subResult.dims[key] : null;
+    dims[key] = fromSub && fromSub.value != null ? fromSub : runResult.dims[key];
   }
 
-  const level = result.confidence >= 0.75 ? '较高' : result.confidence >= 0.4 ? '一般' : '偏低';
-  el.masterySource.textContent = `基于 ${result.sample} 条运行记录、${result.sessions} 次练习推算 · 置信度${level}`;
+  mastery.render(dims);
+
+  const parts = [];
+  if (subResult && subResult.sample) parts.push(`${subResult.sample} 条洛谷提交`);
+  if (runResult.sample) parts.push(`${runResult.sample} 条运行记录`);
+
+  if (parts.length === 0) {
+    el.masterySource.textContent = '还没有数据：跑几次算法，或者导入洛谷记录';
+    return;
+  }
+  el.masterySource.textContent = `基于 ${parts.join(' + ')} 推算`;
 }
 
 let currentAlgo = algorithms[0];
@@ -3114,6 +3539,128 @@ el.clearRuns.addEventListener('click', () => {
   clearAll(localStorage);
   runs = [];
   renderRuns();
+  refreshFeatures();
+});
+
+/* ---------------- 洛谷导入 ---------------- */
+
+const LUOGU_KEY = 'algo-agent:submissions';
+let submissions = [];
+
+try {
+  const raw = localStorage.getItem(LUOGU_KEY);
+  const parsed = raw ? JSON.parse(raw) : [];
+  submissions = Array.isArray(parsed) ? parsed : [];
+} catch {
+  submissions = [];
+}
+
+function saveSubmissions() {
+  try {
+    localStorage.setItem(LUOGU_KEY, JSON.stringify(submissions));
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function setLuoguStatus(text, kind) {
+  el.luoguStatus.textContent = text;
+  el.luoguStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+}
+
+function renderLuoguSummary() {
+  if (submissions.length === 0) {
+    el.luoguSummary.innerHTML = '';
+    return;
+  }
+
+  const stats = summarizeSubmissions(submissions);
+  const max = Math.max(...stats.histogram.slice(1), 1);
+
+  const rows = [];
+  for (let level = 1; level <= 7; level += 1) {
+    const count = stats.histogram[level] || 0;
+    if (count === 0) continue;
+    rows.push(`
+      <div class="diff-row">
+        <span class="lvl">${difficultyLabel(level)}</span>
+        <span class="track"><span class="fill" style="width:${Math.round((count / max) * 100)}%"></span></span>
+        <span class="cnt">${count}</span>
+      </div>`);
+  }
+
+  el.luoguSummary.innerHTML = `
+    <div class="luogu-stats">
+      <span>提交 <b>${stats.submissions}</b></span>
+      <span>题目 <b>${stats.problems}</b></span>
+      <span>通过 <b>${stats.solved}</b></span>
+      <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
+      <span>跨度 <b>${(stats.firstAt || '').slice(0, 10)} ~ ${(stats.lastAt || '').slice(0, 10)}</b></span>
+    </div>
+    <div class="diff-bars">${rows.join('')}</div>`;
+}
+
+function importLuogu(rawArray) {
+  const normalized = normalizeRecords(rawArray);
+  if (normalized.length === 0) {
+    setLuoguStatus('没解析出记录：确认文件是洛谷提交记录的 JSON 数组', 'bad');
+    return;
+  }
+
+  submissions = normalized;
+  saveSubmissions();
+  renderLuoguSummary();
+  refreshFeatures();
+  setLuoguStatus(`导入 ${normalized.length} 条提交`, 'ok');
+}
+
+el.luoguSnippet.textContent = BOOKMARKLET;
+
+el.copySnippet.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(BOOKMARKLET);
+    setLuoguStatus('脚本已复制', 'ok');
+  } catch {
+    setLuoguStatus('浏览器不让自动复制，请手动选中上面的脚本复制', 'bad');
+  }
+});
+
+el.luoguFile.addEventListener('change', () => {
+  const file = el.luoguFile.files && el.luoguFile.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      importLuogu(JSON.parse(String(reader.result)));
+    } catch (error) {
+      setLuoguStatus(`JSON 解析失败：${error.message}`, 'bad');
+    }
+  };
+  reader.onerror = () => setLuoguStatus('读文件失败', 'bad');
+  reader.readAsText(file, 'utf-8');
+});
+
+el.parseLuogu.addEventListener('click', () => {
+  const text = el.luoguPaste.value.trim();
+  if (!text) {
+    setLuoguStatus('先把 JSON 粘进下面的框里', 'bad');
+    return;
+  }
+  try {
+    importLuogu(JSON.parse(text));
+  } catch (error) {
+    setLuoguStatus(`JSON 解析失败：${error.message}`, 'bad');
+  }
+});
+
+el.clearLuogu.addEventListener('click', () => {
+  submissions = [];
+  saveSubmissions();
+  renderLuoguSummary();
+  refreshFeatures();
+  el.luoguPaste.value = '';
+  setLuoguStatus('已清除导入数据', 'muted');
 });
 
 /* ---------------- 知识图谱侧边栏 ---------------- */
@@ -3268,6 +3815,7 @@ setInterval(() => {
 renderKnowledgeGraph();
 renderRecommend();
 renderRuns();
+renderLuoguSummary();
 refreshFeatures();
 build();
 diagnosisView.show({

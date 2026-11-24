@@ -18,6 +18,13 @@ import { createDiagnosisView } from './ui/diagnosisPanel.js';
 import { createMastery } from './ui/mastery.js';
 import { runUserCode, TEMPLATE } from './user/runner.js';
 import { computeFeatures } from './assessment/features.js';
+import { computeSubmissionFeatures } from './assessment/submissions.js';
+import {
+  BOOKMARKLET,
+  normalizeRecords,
+  summarizeSubmissions,
+  difficultyLabel
+} from './import/luogu.js';
 import {
   pushRecord,
   loadRecords,
@@ -73,7 +80,16 @@ const el = {
   historyList: $('history-list'),
   historyStats: $('history-stats'),
   exportRuns: $('btn-export-runs'),
-  clearRuns: $('btn-clear-runs')
+  clearRuns: $('btn-clear-runs'),
+  luogu: $('luogu'),
+  luoguSnippet: $('luogu-snippet'),
+  copySnippet: $('btn-copy-snippet'),
+  luoguFile: $('luogu-file'),
+  luoguPaste: $('luogu-paste'),
+  parseLuogu: $('btn-parse-luogu'),
+  clearLuogu: $('btn-clear-luogu'),
+  luoguStatus: $('luogu-status'),
+  luoguSummary: $('luogu-summary')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -100,16 +116,27 @@ const catalog = algorithms.map((algo) => ({
 }));
 
 function refreshFeatures() {
-  const result = computeFeatures(runs, catalog);
-  mastery.render(result.dims);
+  const runResult = computeFeatures(runs, catalog);
+  const subResult = computeSubmissionFeatures(submissions);
 
-  if (result.sample === 0) {
-    el.masterySource.textContent = '还没有运行记录，先跑几次再看';
-    return;
+  // 有洛谷数据就优先用洛谷口径，没有的维度回退到运行记录
+  const dims = {};
+  for (const key of Object.keys(runResult.dims)) {
+    const fromSub = subResult && subResult.dims ? subResult.dims[key] : null;
+    dims[key] = fromSub && fromSub.value != null ? fromSub : runResult.dims[key];
   }
 
-  const level = result.confidence >= 0.75 ? '较高' : result.confidence >= 0.4 ? '一般' : '偏低';
-  el.masterySource.textContent = `基于 ${result.sample} 条运行记录、${result.sessions} 次练习推算 · 置信度${level}`;
+  mastery.render(dims);
+
+  const parts = [];
+  if (subResult && subResult.sample) parts.push(`${subResult.sample} 条洛谷提交`);
+  if (runResult.sample) parts.push(`${runResult.sample} 条运行记录`);
+
+  if (parts.length === 0) {
+    el.masterySource.textContent = '还没有数据：跑几次算法，或者导入洛谷记录';
+    return;
+  }
+  el.masterySource.textContent = `基于 ${parts.join(' + ')} 推算`;
 }
 
 let currentAlgo = algorithms[0];
@@ -443,6 +470,128 @@ el.clearRuns.addEventListener('click', () => {
   clearAll(localStorage);
   runs = [];
   renderRuns();
+  refreshFeatures();
+});
+
+/* ---------------- 洛谷导入 ---------------- */
+
+const LUOGU_KEY = 'algo-agent:submissions';
+let submissions = [];
+
+try {
+  const raw = localStorage.getItem(LUOGU_KEY);
+  const parsed = raw ? JSON.parse(raw) : [];
+  submissions = Array.isArray(parsed) ? parsed : [];
+} catch {
+  submissions = [];
+}
+
+function saveSubmissions() {
+  try {
+    localStorage.setItem(LUOGU_KEY, JSON.stringify(submissions));
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function setLuoguStatus(text, kind) {
+  el.luoguStatus.textContent = text;
+  el.luoguStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+}
+
+function renderLuoguSummary() {
+  if (submissions.length === 0) {
+    el.luoguSummary.innerHTML = '';
+    return;
+  }
+
+  const stats = summarizeSubmissions(submissions);
+  const max = Math.max(...stats.histogram.slice(1), 1);
+
+  const rows = [];
+  for (let level = 1; level <= 7; level += 1) {
+    const count = stats.histogram[level] || 0;
+    if (count === 0) continue;
+    rows.push(`
+      <div class="diff-row">
+        <span class="lvl">${difficultyLabel(level)}</span>
+        <span class="track"><span class="fill" style="width:${Math.round((count / max) * 100)}%"></span></span>
+        <span class="cnt">${count}</span>
+      </div>`);
+  }
+
+  el.luoguSummary.innerHTML = `
+    <div class="luogu-stats">
+      <span>提交 <b>${stats.submissions}</b></span>
+      <span>题目 <b>${stats.problems}</b></span>
+      <span>通过 <b>${stats.solved}</b></span>
+      <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
+      <span>跨度 <b>${(stats.firstAt || '').slice(0, 10)} ~ ${(stats.lastAt || '').slice(0, 10)}</b></span>
+    </div>
+    <div class="diff-bars">${rows.join('')}</div>`;
+}
+
+function importLuogu(rawArray) {
+  const normalized = normalizeRecords(rawArray);
+  if (normalized.length === 0) {
+    setLuoguStatus('没解析出记录：确认文件是洛谷提交记录的 JSON 数组', 'bad');
+    return;
+  }
+
+  submissions = normalized;
+  saveSubmissions();
+  renderLuoguSummary();
+  refreshFeatures();
+  setLuoguStatus(`导入 ${normalized.length} 条提交`, 'ok');
+}
+
+el.luoguSnippet.textContent = BOOKMARKLET;
+
+el.copySnippet.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(BOOKMARKLET);
+    setLuoguStatus('脚本已复制', 'ok');
+  } catch {
+    setLuoguStatus('浏览器不让自动复制，请手动选中上面的脚本复制', 'bad');
+  }
+});
+
+el.luoguFile.addEventListener('change', () => {
+  const file = el.luoguFile.files && el.luoguFile.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      importLuogu(JSON.parse(String(reader.result)));
+    } catch (error) {
+      setLuoguStatus(`JSON 解析失败：${error.message}`, 'bad');
+    }
+  };
+  reader.onerror = () => setLuoguStatus('读文件失败', 'bad');
+  reader.readAsText(file, 'utf-8');
+});
+
+el.parseLuogu.addEventListener('click', () => {
+  const text = el.luoguPaste.value.trim();
+  if (!text) {
+    setLuoguStatus('先把 JSON 粘进下面的框里', 'bad');
+    return;
+  }
+  try {
+    importLuogu(JSON.parse(text));
+  } catch (error) {
+    setLuoguStatus(`JSON 解析失败：${error.message}`, 'bad');
+  }
+});
+
+el.clearLuogu.addEventListener('click', () => {
+  submissions = [];
+  saveSubmissions();
+  renderLuoguSummary();
+  refreshFeatures();
+  el.luoguPaste.value = '';
+  setLuoguStatus('已清除导入数据', 'muted');
 });
 
 /* ---------------- 知识图谱侧边栏 ---------------- */
@@ -597,6 +746,7 @@ setInterval(() => {
 renderKnowledgeGraph();
 renderRecommend();
 renderRuns();
+renderLuoguSummary();
 refreshFeatures();
 build();
 diagnosisView.show({

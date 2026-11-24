@@ -30,6 +30,8 @@ const MODULES = [
   'src/user/runner.js',
   'src/user/history.js',
   'src/assessment/features.js',
+  'src/import/luogu.js',
+  'src/assessment/submissions.js',
   'src/ui/diagnosisPanel.js',
   'src/algorithms/sort/quick.js',
   'src/algorithms/sort/bubble.js',
