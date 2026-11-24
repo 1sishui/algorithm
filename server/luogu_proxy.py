@@ -193,10 +193,11 @@ def fetch_records_with_cookie(uid, page=1, cookie="", timeout=15):
     except Exception as exc:  # noqa: BLE001
         attempts.append(f"页面接口 出错：{str(exc)[:80]}")
 
+    hint = "洛谷现在返回的是网页外壳（SPA），数据由浏览器里的 JS 加载，服务端拿不到。"
     return 200, {
         "ok": False,
-        "reason": "login_required",
-        "message": "两种请求都没拿到记录：" + "；".join(attempts),
+        "reason": "spa_shell",
+        "message": hint + "具体：" + "；".join(attempts),
         "attempts": attempts,
         "detail": "；".join(attempts)[:400],
     }
