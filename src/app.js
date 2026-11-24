@@ -14,6 +14,15 @@ import { diagnoseWithLLM, checkHealth, explainFailure } from './llm/client.js';
 import { createDiagnosisView } from './ui/diagnosisPanel.js';
 import { createMastery } from './ui/mastery.js';
 import { runUserCode, TEMPLATE } from './user/runner.js';
+import {
+  pushRecord,
+  loadRecords,
+  saveRecords,
+  clearAll,
+  summarize,
+  serialize,
+  describe
+} from './user/history.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -51,7 +60,12 @@ const el = {
   runCode: $('btn-run-code'),
   templateBtn: $('btn-template'),
   clearCode: $('btn-clear-code'),
-  codeStatus: $('user-code-status')
+  codeStatus: $('user-code-status'),
+  historyCount: $('history-count'),
+  historySummary: $('history-summary'),
+  historyList: $('history-list'),
+  exportRuns: $('btn-export-runs'),
+  clearRuns: $('btn-clear-runs')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -64,6 +78,7 @@ const USER_ALGO = {
 const menu = [...algorithms, USER_ALGO];
 
 let renderer = null;
+let skipFirstRecord = true; // 页面刚打开时的首次生成不计入记录
 const mastery = createMastery(el.mastery);
 
 let currentAlgo = algorithms[0];
@@ -133,9 +148,30 @@ function build() {
   if (isTree) renderer.setTree(currentAlgo.tree);
 
   const input = parseInput(el.input.value);
+  const started = performance.now();
   const steps = isTree ? currentAlgo.run() : currentAlgo.run(input);
+  const elapsed = Math.round(performance.now() - started);
+
   player.load(steps);
   el.speed.value = String(player.speed);
+
+  const last = steps[steps.length - 1];
+  const metrics = (last && last.metrics) || {};
+  if (skipFirstRecord) {
+    skipFirstRecord = false;
+    return;
+  }
+  addRun({
+    at: new Date().toISOString(),
+    algorithm: currentAlgo.name,
+    kind: isTree ? 'tree' : 'builtin',
+    size: isTree ? (last && last.visited ? last.visited.length : 0) : input.length,
+    steps: steps.length,
+    comparisons: isTree ? null : metrics.comparisons ?? null,
+    swaps: isTree ? null : metrics.swaps ?? null,
+    ms: elapsed,
+    error: null
+  });
 }
 
 /* ---------------- 算法下拉框 ---------------- */
@@ -185,12 +221,25 @@ function runMyCode() {
   el.inputWrap.classList.remove('hidden');
 
   const input = parseInput(el.input.value);
+  const started = performance.now();
   const result = runUserCode(el.userCode.value, input);
+  const elapsed = Math.round(performance.now() - started);
 
   persistCode();
 
   if (!result.ok) {
     setCodeStatus(result.error, 'bad');
+    addRun({
+      at: new Date().toISOString(),
+      algorithm: '我的代码',
+      kind: 'user',
+      size: input.length,
+      steps: result.steps ? result.steps.length : 0,
+      comparisons: null,
+      swaps: null,
+      ms: elapsed,
+      error: result.error
+    });
     if (result.steps && result.steps.length > 0) {
       player.load(result.steps);
       el.note.textContent = result.error;
@@ -198,8 +247,20 @@ function runMyCode() {
     return;
   }
 
+  const last = result.steps[result.steps.length - 1];
   player.load(result.steps);
   setCodeStatus(`运行成功，共 ${result.steps.length} 步`, 'ok');
+  addRun({
+    at: new Date().toISOString(),
+    algorithm: '我的代码',
+    kind: 'user',
+    size: input.length,
+    steps: result.steps.length,
+    comparisons: last.metrics.comparisons,
+    swaps: last.metrics.swaps,
+    ms: elapsed,
+    error: null
+  });
 }
 
 try {
@@ -222,6 +283,58 @@ el.templateBtn.addEventListener('click', () => {
 el.clearCode.addEventListener('click', () => {
   el.userCode.value = '';
   setCodeStatus('', 'muted');
+});
+
+/* ---------------- 运行记录 ---------------- */
+
+let runs = [];
+try {
+  runs = loadRecords(localStorage);
+} catch {
+  runs = [];
+}
+
+function escapeText(str) {
+  return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+function renderRuns() {
+  const stats = summarize(runs);
+  el.historyCount.textContent = String(stats.count);
+  el.historySummary.textContent = stats.count
+    ? `平均 ${stats.avgSteps} 步 · 平均比较 ${stats.avgComparisons} 次` + (stats.errors ? ` · 出错 ${stats.errors} 次` : '')
+    : '还没有记录';
+
+  el.historyList.innerHTML = runs
+    .slice(0, 8)
+    .map((record) => {
+      const time = String(record.at || '').slice(11, 19);
+      const cls = record.error ? ' class="err"' : '';
+      return `<li${cls}><span class="time">${time}</span>${escapeText(describe(record))}</li>`;
+    })
+    .join('');
+}
+
+function addRun(entry) {
+  runs = pushRecord(runs, entry);
+  saveRecords(localStorage, runs);
+  renderRuns();
+}
+
+el.exportRuns.addEventListener('click', () => {
+  const blob = new Blob([serialize(runs)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `运行记录-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+});
+
+el.clearRuns.addEventListener('click', () => {
+  clearAll(localStorage);
+  runs = [];
+  renderRuns();
 });
 
 /* ---------------- 知识图谱侧边栏 ---------------- */
@@ -377,6 +490,7 @@ setInterval(() => {
 
 renderKnowledgeGraph();
 renderRecommend();
+renderRuns();
 build();
 diagnosisView.show({
   result: diagnose('int a[10]; for (int i = 0; i <= n; i++) { a[i] = 0; }'),

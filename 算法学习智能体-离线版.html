@@ -390,6 +390,33 @@ details pre { margin-top: 6px; }
 #user-code-status.ok { color: #86efac; }
 #user-code-status.bad { color: #fcd34d; }
 
+/* ---------- 运行记录 ---------- */
+.history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.history-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.history-head b { color: var(--text); }
+.history-summary { color: var(--muted); }
+.history-head button { padding: 4px 10px; font-size: 12px; }
+.history-head button:first-of-type { margin-left: auto; }
+#history-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 168px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: #b8c7db;
+  line-height: 1.9;
+}
+#history-list li.err { color: #fcd34d; }
+#history-list li span.time { color: var(--muted); margin-right: 6px; font-variant-numeric: tabular-nums; }
+
 </style>
 </head>
 <body>
@@ -450,6 +477,16 @@ details pre { margin-top: 6px; }
         <button id="btn-template">插入示例</button>
         <button id="btn-clear-code">清空</button>
         <span id="user-code-status" class="muted"></span>
+      </div>
+
+      <div class="history">
+        <div class="history-head">
+          <span>运行记录 <b id="history-count">0</b> 条</span>
+          <span class="history-summary" id="history-summary"></span>
+          <button id="btn-export-runs">导出 JSON</button>
+          <button id="btn-clear-runs">清空</button>
+        </div>
+        <ol id="history-list"></ol>
       </div>
     </details>
   </main>
@@ -1571,6 +1608,98 @@ function runUserCode(source, input) {
 return { MAX_STEPS, TEMPLATE, runUserCode };
 })();
 
+/* ===== src/user/history.js ===== */
+const __m_user_history = (function () {
+/**
+ * 运行记录
+ *
+ * 这是本项目第一份「真实行为数据」：每次运行（内置算法或用户自己的代码）都记一条，
+ * 包含规模、步数、比较/交换次数、耗时、是否出错。
+ *
+ * 现在的用途是本地统计；以后接 Supabase 时，把 saveRecords 换成写库即可，
+ * 上层代码不用动。理解度评估的六维特征将来就从这类记录里算。
+ */
+const STORAGE_KEY = 'algo-agent:runs';
+const MAX_RECORDS = 50;
+
+/** 纯函数，方便测试：往列表头部插入一条并截断 */
+function pushRecord(records, record, max = MAX_RECORDS) {
+  return [record, ...records].slice(0, max);
+}
+
+/** 简单统计，给面板显示用 */
+function summarize(records) {
+  if (!records || records.length === 0) {
+    return { count: 0, errors: 0, avgComparisons: 0, avgSteps: 0 };
+  }
+  const ok = records.filter((r) => !r.error);
+  const avg = (list, key) =>
+    list.length === 0
+      ? 0
+      : Math.round(list.reduce((sum, item) => sum + (Number(item[key]) || 0), 0) / list.length);
+
+  return {
+    count: records.length,
+    errors: records.length - ok.length,
+    avgComparisons: avg(ok, 'comparisons'),
+    avgSteps: avg(ok, 'steps')
+  };
+}
+
+function loadRecords(storage) {
+  try {
+    const raw = storage.getItem(STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecords(storage, records) {
+  try {
+    storage.setItem(STORAGE_KEY, JSON.stringify(records));
+  } catch {
+    /* 隐私模式写不进去，忽略 */
+  }
+}
+
+function clearAll(storage) {
+  try {
+    storage.removeItem(STORAGE_KEY);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 导出成可读的 JSON（以后论文里的“行为日志样例”可以直接引用） */
+function serialize(records) {
+  return JSON.stringify(
+    {
+      exportedAt: new Date().toISOString(),
+      schema: 'algo-agent.runs.v1',
+      records
+    },
+    null,
+    2
+  );
+}
+
+/** 一行摘要，面板用 */
+function describe(record) {
+  if (record.error) return `${record.algorithm} · 出错：${record.error}`;
+
+  const parts = [record.algorithm];
+  if (record.size) parts.push(`n=${record.size}`);
+  parts.push(`${record.steps} 步`);
+  if (Number.isFinite(record.comparisons)) parts.push(`比较 ${record.comparisons}`);
+  if (Number.isFinite(record.swaps)) parts.push(`交换 ${record.swaps}`);
+  parts.push(`${record.ms} ms`);
+  return parts.join(' · ');
+}
+return { STORAGE_KEY, MAX_RECORDS, pushRecord, summarize, loadRecords, saveRecords, clearAll, serialize, describe };
+})();
+
 /* ===== src/ui/diagnosisPanel.js ===== */
 const __m_ui_diagnosisPanel = (function () {
 /**
@@ -1888,6 +2017,7 @@ const { diagnoseWithLLM, checkHealth, explainFailure } = __m_llm_client;
 const { createDiagnosisView } = __m_ui_diagnosisPanel;
 const { createMastery } = __m_ui_mastery;
 const { runUserCode, TEMPLATE } = __m_user_runner;
+const { pushRecord, loadRecords, saveRecords, clearAll, summarize, serialize, describe } = __m_user_history;
 
 const $ = (id) => document.getElementById(id);
 
@@ -1925,7 +2055,12 @@ const el = {
   runCode: $('btn-run-code'),
   templateBtn: $('btn-template'),
   clearCode: $('btn-clear-code'),
-  codeStatus: $('user-code-status')
+  codeStatus: $('user-code-status'),
+  historyCount: $('history-count'),
+  historySummary: $('history-summary'),
+  historyList: $('history-list'),
+  exportRuns: $('btn-export-runs'),
+  clearRuns: $('btn-clear-runs')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -1938,6 +2073,7 @@ const USER_ALGO = {
 const menu = [...algorithms, USER_ALGO];
 
 let renderer = null;
+let skipFirstRecord = true; // 页面刚打开时的首次生成不计入记录
 const mastery = createMastery(el.mastery);
 
 let currentAlgo = algorithms[0];
@@ -2007,9 +2143,30 @@ function build() {
   if (isTree) renderer.setTree(currentAlgo.tree);
 
   const input = parseInput(el.input.value);
+  const started = performance.now();
   const steps = isTree ? currentAlgo.run() : currentAlgo.run(input);
+  const elapsed = Math.round(performance.now() - started);
+
   player.load(steps);
   el.speed.value = String(player.speed);
+
+  const last = steps[steps.length - 1];
+  const metrics = (last && last.metrics) || {};
+  if (skipFirstRecord) {
+    skipFirstRecord = false;
+    return;
+  }
+  addRun({
+    at: new Date().toISOString(),
+    algorithm: currentAlgo.name,
+    kind: isTree ? 'tree' : 'builtin',
+    size: isTree ? (last && last.visited ? last.visited.length : 0) : input.length,
+    steps: steps.length,
+    comparisons: isTree ? null : metrics.comparisons ?? null,
+    swaps: isTree ? null : metrics.swaps ?? null,
+    ms: elapsed,
+    error: null
+  });
 }
 
 /* ---------------- 算法下拉框 ---------------- */
@@ -2059,12 +2216,25 @@ function runMyCode() {
   el.inputWrap.classList.remove('hidden');
 
   const input = parseInput(el.input.value);
+  const started = performance.now();
   const result = runUserCode(el.userCode.value, input);
+  const elapsed = Math.round(performance.now() - started);
 
   persistCode();
 
   if (!result.ok) {
     setCodeStatus(result.error, 'bad');
+    addRun({
+      at: new Date().toISOString(),
+      algorithm: '我的代码',
+      kind: 'user',
+      size: input.length,
+      steps: result.steps ? result.steps.length : 0,
+      comparisons: null,
+      swaps: null,
+      ms: elapsed,
+      error: result.error
+    });
     if (result.steps && result.steps.length > 0) {
       player.load(result.steps);
       el.note.textContent = result.error;
@@ -2072,8 +2242,20 @@ function runMyCode() {
     return;
   }
 
+  const last = result.steps[result.steps.length - 1];
   player.load(result.steps);
   setCodeStatus(`运行成功，共 ${result.steps.length} 步`, 'ok');
+  addRun({
+    at: new Date().toISOString(),
+    algorithm: '我的代码',
+    kind: 'user',
+    size: input.length,
+    steps: result.steps.length,
+    comparisons: last.metrics.comparisons,
+    swaps: last.metrics.swaps,
+    ms: elapsed,
+    error: null
+  });
 }
 
 try {
@@ -2096,6 +2278,58 @@ el.templateBtn.addEventListener('click', () => {
 el.clearCode.addEventListener('click', () => {
   el.userCode.value = '';
   setCodeStatus('', 'muted');
+});
+
+/* ---------------- 运行记录 ---------------- */
+
+let runs = [];
+try {
+  runs = loadRecords(localStorage);
+} catch {
+  runs = [];
+}
+
+function escapeText(str) {
+  return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+function renderRuns() {
+  const stats = summarize(runs);
+  el.historyCount.textContent = String(stats.count);
+  el.historySummary.textContent = stats.count
+    ? `平均 ${stats.avgSteps} 步 · 平均比较 ${stats.avgComparisons} 次` + (stats.errors ? ` · 出错 ${stats.errors} 次` : '')
+    : '还没有记录';
+
+  el.historyList.innerHTML = runs
+    .slice(0, 8)
+    .map((record) => {
+      const time = String(record.at || '').slice(11, 19);
+      const cls = record.error ? ' class="err"' : '';
+      return `<li${cls}><span class="time">${time}</span>${escapeText(describe(record))}</li>`;
+    })
+    .join('');
+}
+
+function addRun(entry) {
+  runs = pushRecord(runs, entry);
+  saveRecords(localStorage, runs);
+  renderRuns();
+}
+
+el.exportRuns.addEventListener('click', () => {
+  const blob = new Blob([serialize(runs)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `运行记录-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+});
+
+el.clearRuns.addEventListener('click', () => {
+  clearAll(localStorage);
+  runs = [];
+  renderRuns();
 });
 
 /* ---------------- 知识图谱侧边栏 ---------------- */
@@ -2251,6 +2485,7 @@ setInterval(() => {
 
 renderKnowledgeGraph();
 renderRecommend();
+renderRuns();
 build();
 diagnosisView.show({
   result: diagnose('int a[10]; for (int i = 0; i <= n; i++) { a[i] = 0; }'),

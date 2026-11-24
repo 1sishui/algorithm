@@ -382,3 +382,30 @@ details pre { margin-top: 6px; }
 #user-code-status { font-size: 12px; }
 #user-code-status.ok { color: #86efac; }
 #user-code-status.bad { color: #fcd34d; }
+
+/* ---------- 运行记录 ---------- */
+.history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.history-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.history-head b { color: var(--text); }
+.history-summary { color: var(--muted); }
+.history-head button { padding: 4px 10px; font-size: 12px; }
+.history-head button:first-of-type { margin-left: auto; }
+#history-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 168px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: #b8c7db;
+  line-height: 1.9;
+}
+#history-list li.err { color: #fcd34d; }
+#history-list li span.time { color: var(--muted); margin-right: 6px; font-variant-numeric: tabular-nums; }
