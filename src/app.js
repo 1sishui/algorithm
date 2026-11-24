@@ -6,6 +6,7 @@
  */
 import { algorithms, findAlgorithm, findByKnowledgePoint } from './algorithms/registry.js';
 import { createArrayBars } from './render/arrayBars.js';
+import { createTreeView } from './render/treeView.js';
 import { Player } from './core/player.js';
 import { categories, nodeById, recommend } from './knowledge/graph.js';
 import { diagnose } from './diagnosis/rules.js';
@@ -39,21 +40,37 @@ const el = {
   diagnosis: $('diagnosis'),
   healthBtn: $('btn-health'),
   health: $('health'),
-  progressText: $('progress-text')
+  progressText: $('progress-text'),
+  lblA: $('lbl-a'),
+  lblB: $('lbl-b'),
+  lblC: $('lbl-c'),
+  inputWrap: $('input-wrap')
 };
 
-const renderer = createArrayBars(el.bars);
+let renderer = null;
 const mastery = createMastery(el.mastery);
 
 let currentAlgo = algorithms[0];
+
+/** 按算法的 view 切换渲染器：数组柱状图 / SVG 树 */
+function ensureRenderer(view) {
+  if (renderer && renderer.view === view) return renderer;
+  el.bars.innerHTML = '';
+  el.bars.classList.toggle('tree-mode', view === 'tree');
+  renderer = view === 'tree' ? createTreeView(el.bars) : createArrayBars(el.bars);
+  return renderer;
+}
 
 const player = new Player({
   onStep: (step, index) => {
     renderer.render(step);
     el.note.textContent = step.note;
-    el.compare.textContent = step.metrics.comparisons;
-    el.swap.textContent = step.metrics.swaps;
-    el.depth.textContent = step.depth;
+
+    const metrics = step.metrics || {};
+    el.compare.textContent = metrics.comparisons ?? metrics.visited ?? 0;
+    el.swap.textContent = metrics.swaps ?? metrics.pushed ?? 0;
+    el.depth.textContent = step.depth ?? (step.stack ? step.stack.length : 0);
+
     el.index.textContent = index;
     el.progress.value = String(index);
     el.stepText.textContent = `${index + 1} / ${player.total}`;
@@ -81,8 +98,20 @@ function parseInput(text) {
 }
 
 function build() {
+  const view = currentAlgo.view || 'array';
+  ensureRenderer(view);
+
+  // 切换指标名称：数组看比较/交换，树看访问/入栈
+  const isTree = view === 'tree';
+  el.lblA.textContent = isTree ? '已访问' : '比较次数';
+  el.lblB.textContent = isTree ? '入栈次数' : '交换次数';
+  el.lblC.textContent = isTree ? '栈内元素' : '递归深度';
+  el.inputWrap.classList.toggle('hidden', isTree);
+
+  if (isTree) renderer.setTree(currentAlgo.tree);
+
   const input = parseInput(el.input.value);
-  const steps = currentAlgo.run(input);
+  const steps = isTree ? currentAlgo.run() : currentAlgo.run(input);
   player.load(steps);
   el.speed.value = String(player.speed);
 }

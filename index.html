@@ -26,7 +26,7 @@
       <label>算法
         <select id="algo-select"></select>
       </label>
-      <label class="grow">输入（逗号分隔）
+      <label class="grow" id="input-wrap">输入（逗号分隔）
         <input id="input-data" value="5, 2, 9, 1, 7, 3, 8" />
       </label>
       <button id="btn-regenerate" class="primary">生成</button>
@@ -46,9 +46,9 @@
     <p id="note" class="note">选择一个算法，点击「生成」开始。</p>
 
     <div class="metrics">
-      <span>比较次数 <b id="m-compare">0</b></span>
-      <span>交换次数 <b id="m-swap">0</b></span>
-      <span>递归深度 <b id="m-depth">0</b></span>
+      <span><i id="lbl-a">比较次数</i> <b id="m-compare">0</b></span>
+      <span><i id="lbl-b">交换次数</i> <b id="m-swap">0</b></span>
+      <span><i id="lbl-c">递归深度</i> <b id="m-depth">0</b></span>
       <span>当前步骤 <b id="m-index">0</b></span>
     </div>
   </main>

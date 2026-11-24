@@ -310,6 +310,38 @@ details pre { margin-top: 6px; }
 .health.good { display: block; border-color: rgba(34, 197, 94, .45); color: #86efac; }
 .health.bad { display: block; border-color: rgba(245, 158, 11, .45); color: #fcd34d; }
 
+/* ---------- 树视图 ---------- */
+.bars.tree-mode {
+  display: block;
+  height: auto;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.tree-svg { width: 100%; height: 340px; display: block; }
+.tree-strip {
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.tnode circle {
+  fill: #16213a;
+  stroke: #2b4a6f;
+  stroke-width: 2;
+  transition: fill .15s, stroke .15s;
+}
+.tnode text { fill: #e6edf7; font-size: 14px; font-weight: 600; }
+.tnode.instack circle { stroke: var(--blue); stroke-dasharray: 4 3; }
+.tnode.visited circle { fill: #1f5138; stroke: var(--green); }
+.tnode.current circle { fill: #7c2d12; stroke: var(--amber); stroke-width: 3; }
+.tedge { stroke: #2b4a6f; stroke-width: 2; }
+.hidden { display: none !important; }
+.metrics i { font-style: normal; }
+
 </style>
 </head>
 <body>
@@ -332,7 +364,7 @@ details pre { margin-top: 6px; }
       <label>算法
         <select id="algo-select"></select>
       </label>
-      <label class="grow">输入（逗号分隔）
+      <label class="grow" id="input-wrap">输入（逗号分隔）
         <input id="input-data" value="5, 2, 9, 1, 7, 3, 8" />
       </label>
       <button id="btn-regenerate" class="primary">生成</button>
@@ -352,9 +384,9 @@ details pre { margin-top: 6px; }
     <p id="note" class="note">选择一个算法，点击「生成」开始。</p>
 
     <div class="metrics">
-      <span>比较次数 <b id="m-compare">0</b></span>
-      <span>交换次数 <b id="m-swap">0</b></span>
-      <span>递归深度 <b id="m-depth">0</b></span>
+      <span><i id="lbl-a">比较次数</i> <b id="m-compare">0</b></span>
+      <span><i id="lbl-b">交换次数</i> <b id="m-swap">0</b></span>
+      <span><i id="lbl-c">递归深度</i> <b id="m-depth">0</b></span>
       <span>当前步骤 <b id="m-index">0</b></span>
     </div>
   </main>
@@ -820,6 +852,395 @@ function createArrayBars(container) {
 return { createArrayBars };
 })();
 
+/* ===== src/render/treeView.js ===== */
+const __m_render_treeView = (function () {
+/**
+ * 二叉树渲染器（SVG）
+ *
+ * 和数组柱状图一样，它只认「一步」这个数据结构：
+ *   { visited, current, stack, note, metrics }
+ * 它不知道什么是前序中序，只是把“谁访问过、谁正在访问、栈里有什么”画出来。
+ *
+ * 布局规则：x 由中序序号决定（保证不重叠），y 由深度决定。
+ * 这样同一棵树永远长一个样，切换遍历方式时不会晃来晃去。
+ */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const RADIUS = 22;
+const X_GAP = 92;
+const Y_GAP = 86;
+const PAD = 46;
+
+function el(name, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, name);
+  Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value)));
+  return node;
+}
+
+function createTreeView(container) {
+  let svg = null;
+  let nodeEls = new Map();
+  let stackEl = null;
+  let visitedEl = null;
+
+  function buildTreeView(root) {
+    container.innerHTML = '';
+    nodeEls = new Map();
+    if (!root) return;
+
+    // 1. 算坐标：中序序号 → x，深度 → y
+    const positions = new Map();
+    let order = 0;
+    let maxDepth = 0;
+
+    const walk = (node, depth) => {
+      if (!node) return;
+      walk(node.left, depth + 1);
+      positions.set(node.id, { x: PAD + order * X_GAP, y: PAD + depth * Y_GAP, node });
+      order += 1;
+      maxDepth = Math.max(maxDepth, depth);
+      walk(node.right, depth + 1);
+    };
+    walk(root, 0);
+
+    const width = PAD * 2 + Math.max(0, order - 1) * X_GAP;
+    const height = PAD * 2 + maxDepth * Y_GAP;
+
+    // 2. 画线（先画线，节点才能压在上面）
+    svg = el('svg', {
+      viewBox: `0 0 ${width} ${height}`,
+      class: 'tree-svg',
+      preserveAspectRatio: 'xMidYMid meet'
+    });
+
+    positions.forEach(({ x, y, node }) => {
+      [node.left, node.right].forEach((child) => {
+        if (!child) return;
+        const p = positions.get(child.id);
+        svg.appendChild(
+          el('line', { x1: x, y1: y + RADIUS, x2: p.x, y2: p.y - RADIUS, class: 'tedge' })
+        );
+      });
+    });
+
+    // 3. 画节点
+    positions.forEach(({ x, y, node }) => {
+      const group = el('g', { class: 'tnode', 'data-id': node.id });
+      group.appendChild(el('circle', { cx: x, cy: y, r: RADIUS }));
+      const text = el('text', { x, y: y + 5, 'text-anchor': 'middle' });
+      text.textContent = String(node.val);
+      group.appendChild(text);
+      svg.appendChild(group);
+      nodeEls.set(node.id, group);
+    });
+
+    container.appendChild(svg);
+
+    // 4. 栈与访问序列（文字辅助，解释“为什么是这个顺序”）
+    const strip = document.createElement('div');
+    strip.className = 'tree-strip';
+    stackEl = document.createElement('span');
+    stackEl.className = 'stack';
+    visitedEl = document.createElement('span');
+    visitedEl.className = 'visited';
+    strip.appendChild(stackEl);
+    strip.appendChild(visitedEl);
+    container.appendChild(strip);
+  }
+
+  function label(root, ids) {
+    return ids
+      .map((id) => {
+        const found = find(root, id);
+        return found ? found.val : '?';
+      })
+      .join(' → ');
+  }
+
+  let treeRoot = null;
+
+  function render(step) {
+    if (!svg) return;
+
+    nodeEls.forEach((group, id) => {
+      group.classList.toggle('visited', step.visited.includes(id));
+      group.classList.toggle('current', step.current === id);
+      group.classList.toggle('instack', step.stack.includes(id));
+    });
+
+    if (stackEl) {
+      stackEl.textContent = step.stack.length
+        ? `栈（底 → 顶）：${label(treeRoot, step.stack)}`
+        : '栈：空';
+    }
+    if (visitedEl) {
+      visitedEl.textContent = step.visited.length
+        ? `已访问：${label(treeRoot, step.visited)}`
+        : '已访问：（还没开始）';
+    }
+  }
+
+  function find(node, id) {
+    if (!node) return null;
+    if (node.id === id) return node;
+    return find(node.left, id) || find(node.right, id);
+  }
+
+  return {
+    view: 'tree',
+    setTree(root) {
+      treeRoot = root;
+      buildTreeView(root);
+    },
+    render
+  };
+}
+return { createTreeView };
+})();
+
+/* ===== src/algorithms/tree/model.js ===== */
+const __m_algorithms_tree_model = (function () {
+/**
+ * 二叉树模型：把「层序数组」变成节点对象。
+ *
+ * 用层序数组是因为它最好写也最好读：
+ *   [4, 2, 6, 1, 3, 5, 7]
+ *        4
+ *      /   \
+ *     2     6
+ *    / \   / \
+ *   1   3 5   7
+ * 下标 i 的左孩子在 2i+1，右孩子在 2i+2；null 表示空位。
+ */
+function buildTree(values) {
+  if (!values || values.length === 0 || values[0] == null) return null;
+
+  const nodes = values.map((value, index) =>
+    value == null ? null : { id: `n${index}`, val: value, left: null, right: null }
+  );
+
+  for (let i = 0; i < nodes.length; i++) {
+    if (!nodes[i]) continue;
+    const leftIndex = i * 2 + 1;
+    const rightIndex = i * 2 + 2;
+    if (leftIndex < nodes.length) nodes[i].left = nodes[leftIndex];
+    if (rightIndex < nodes.length) nodes[i].right = nodes[rightIndex];
+  }
+
+  return nodes[0];
+}
+
+/** 遍历所有节点，返回数组（渲染器要用它算坐标） */
+function flatten(root) {
+  const result = [];
+  const walk = (node) => {
+    if (!node) return;
+    result.push(node);
+    walk(node.left);
+    walk(node.right);
+  };
+  walk(root);
+  return result;
+}
+return { buildTree, flatten };
+})();
+
+/* ===== src/algorithms/tree/traversal.js ===== */
+const __m_algorithms_tree_traversal = (function () {
+/**
+ * 二叉树遍历 —— 执行器
+ *
+ * 和排序算法一样：纯函数，产出「每一步的状态」，不碰 DOM。
+ * 不同的是状态形状：这里记录「当前节点 / 已访问 / 栈里有什么」，
+ * 因为树的可视化要画的是“访问顺序”和“栈的进出”，不是数组。
+
+ * 一步的形状：
+ * { visited: [节点id], current: 节点id|null, stack: [节点id], note, metrics }
+ */
+const { buildTree } = __m_algorithms_tree_model;
+
+const DEMO_TREE = buildTree([4, 2, 6, 1, 3, 5, 7]);
+
+function makeSteps() {
+  const steps = [];
+  const state = {
+    visited: [],
+    current: null,
+    stack: [],
+    metrics: { visited: 0, pushed: 0 }
+  };
+
+  const push = (note, extra = {}) => {
+    steps.push({
+      visited: state.visited.slice(),
+      current: extra.current ?? state.current,
+      stack: state.stack.slice(),
+      note,
+      metrics: { ...state.metrics }
+    });
+  };
+
+  return { steps, state, push };
+}
+
+/** 前序：根 → 左 → 右（用栈，先压右再压左） */
+const preorder = {
+  meta: {
+    id: 'tree.preorder',
+    name: '二叉树前序遍历',
+    kp: 'kp.4.0',
+    brief: '根 → 左 → 右',
+    view: 'tree',
+    tree: DEMO_TREE
+  },
+  run() {
+    const { steps, state, push } = makeSteps();
+    const root = DEMO_TREE;
+    if (!root) {
+      push('空树，没有可访问的节点');
+      return steps;
+    }
+
+    state.stack.push(root.id);
+    state.metrics.pushed++;
+    push(`把根节点 ${root.val} 压栈`);
+
+    while (state.stack.length > 0) {
+      const id = state.stack.pop();
+      const node = findById(root, id);
+      state.visited.push(node.id);
+      state.current = node.id;
+      state.metrics.visited++;
+      push(`弹出 ${node.val} 并访问它`);
+
+      if (node.right) {
+        state.stack.push(node.right.id);
+        state.metrics.pushed++;
+        push(`${node.val} 的右孩子 ${node.right.val} 后访问，先压栈`);
+      }
+      if (node.left) {
+        state.stack.push(node.left.id);
+        state.metrics.pushed++;
+        push(`${node.val} 的左孩子 ${node.left.val} 先访问，后压栈（在栈顶）`);
+      }
+    }
+
+    state.current = null;
+    push('栈空，前序遍历结束');
+    return steps;
+  }
+};
+
+/** 中序：左 → 根 → 右（一路向左压栈，弹出来就访问） */
+const inorder = {
+  meta: {
+    id: 'tree.inorder',
+    name: '二叉树中序遍历',
+    kp: 'kp.4.0',
+    brief: '左 → 根 → 右',
+    view: 'tree',
+    tree: DEMO_TREE
+  },
+  run() {
+    const { steps, state, push } = makeSteps();
+    const root = DEMO_TREE;
+    if (!root) {
+      push('空树，没有可访问的节点');
+      return steps;
+    }
+
+    let current = root;
+    push('从中序遍历的起点：根节点开始');
+
+    while (current || state.stack.length > 0) {
+      while (current) {
+        state.stack.push(current.id);
+        state.metrics.pushed++;
+        push(`把 ${current.val} 压栈，继续往左走`);
+        current = current.left;
+      }
+
+      const id = state.stack.pop();
+      const node = findById(root, id);
+      state.visited.push(node.id);
+      state.current = node.id;
+      state.metrics.visited++;
+      push(`左边走到底了，弹出 ${node.val} 并访问`);
+
+      current = node.right;
+      if (current) {
+        push(`转向 ${node.val} 的右子树 ${current.val}`);
+      }
+    }
+
+    state.current = null;
+    push('栈空且没有右子树可走，中序遍历结束');
+    return steps;
+  }
+};
+
+/** 后序：左 → 右 → 根（回到节点时还要判断右子树是否访问完） */
+const postorder = {
+  meta: {
+    id: 'tree.postorder',
+    name: '二叉树后序遍历',
+    kp: 'kp.4.0',
+    brief: '左 → 右 → 根',
+    view: 'tree',
+    tree: DEMO_TREE
+  },
+  run() {
+    const { steps, state, push } = makeSteps();
+    const root = DEMO_TREE;
+    if (!root) {
+      push('空树，没有可访问的节点');
+      return steps;
+    }
+
+    let lastVisited = null;
+    state.stack.push(root.id);
+    state.metrics.pushed++;
+    push('把根节点压栈');
+
+    while (state.stack.length > 0) {
+      const topId = state.stack[state.stack.length - 1];
+      const node = findById(root, topId);
+
+      if (node.left && lastVisited !== node.left.id && lastVisited !== node.right?.id) {
+        state.stack.push(node.left.id);
+        state.metrics.pushed++;
+        push(`${node.val} 的左子树还没走，先去 ${node.left.val}`);
+        continue;
+      }
+
+      if (node.right && lastVisited !== node.right.id) {
+        state.stack.push(node.right.id);
+        state.metrics.pushed++;
+        push(`${node.val} 的左子树走完了，转到右子树 ${node.right.val}`);
+        continue;
+      }
+
+      state.stack.pop();
+      state.visited.push(node.id);
+      state.current = node.id;
+      state.metrics.visited++;
+      lastVisited = node.id;
+      push(`${node.val} 的左右都访问完了，最后访问它`);
+    }
+
+    state.current = null;
+    push('栈空，后序遍历结束');
+    return steps;
+  }
+};
+
+function findById(root, id) {
+  if (!root) return null;
+  if (root.id === id) return root;
+  return findById(root.left, id) || findById(root.right, id);
+}
+return { preorder, inorder, postorder };
+})();
+
 /* ===== src/llm/client.js ===== */
 const __m_llm_client = (function () {
 /**
@@ -1220,16 +1641,27 @@ const __m_algorithms_registry = (function () {
  * 算法注册表
  *
  * 新增一个算法 = 建一个文件（导出 meta 和 run）+ 在这里登记一行。
- * UI、播放器、渲染器都不需要改，这是这套架构的意义。
+ * 界面、播放器、渲染器都不需要改，这是这套架构的意义。
+ *
+ * meta.view 决定用哪个渲染器：'array' 用柱状图，'tree' 用 SVG 树。
  */
 const quick = __m_algorithms_sort_quick;
 const bubble = __m_algorithms_sort_bubble;
 const insertion = __m_algorithms_sort_insertion;
+const { preorder, inorder, postorder } = __m_algorithms_tree_traversal;
 
-const algorithms = [quick, bubble, insertion].map((mod) => ({
+const sorts = [quick, bubble, insertion].map((mod) => ({
+  ...mod.meta,
+  view: 'array',
+  run: mod.run
+}));
+
+const traversals = [preorder, inorder, postorder].map((mod) => ({
   ...mod.meta,
   run: mod.run
 }));
+
+const algorithms = [...sorts, ...traversals];
 
 function findAlgorithm(id) {
   return algorithms.find((algo) => algo.id === id) || algorithms[0];
@@ -1251,6 +1683,7 @@ const __m_app = (function () {
  */
 const { algorithms, findAlgorithm, findByKnowledgePoint } = __m_algorithms_registry;
 const { createArrayBars } = __m_render_arrayBars;
+const { createTreeView } = __m_render_treeView;
 const { Player } = __m_core_player;
 const { categories, nodeById, recommend } = __m_knowledge_graph;
 const { diagnose } = __m_diagnosis_rules;
@@ -1284,21 +1717,37 @@ const el = {
   diagnosis: $('diagnosis'),
   healthBtn: $('btn-health'),
   health: $('health'),
-  progressText: $('progress-text')
+  progressText: $('progress-text'),
+  lblA: $('lbl-a'),
+  lblB: $('lbl-b'),
+  lblC: $('lbl-c'),
+  inputWrap: $('input-wrap')
 };
 
-const renderer = createArrayBars(el.bars);
+let renderer = null;
 const mastery = createMastery(el.mastery);
 
 let currentAlgo = algorithms[0];
+
+/** 按算法的 view 切换渲染器：数组柱状图 / SVG 树 */
+function ensureRenderer(view) {
+  if (renderer && renderer.view === view) return renderer;
+  el.bars.innerHTML = '';
+  el.bars.classList.toggle('tree-mode', view === 'tree');
+  renderer = view === 'tree' ? createTreeView(el.bars) : createArrayBars(el.bars);
+  return renderer;
+}
 
 const player = new Player({
   onStep: (step, index) => {
     renderer.render(step);
     el.note.textContent = step.note;
-    el.compare.textContent = step.metrics.comparisons;
-    el.swap.textContent = step.metrics.swaps;
-    el.depth.textContent = step.depth;
+
+    const metrics = step.metrics || {};
+    el.compare.textContent = metrics.comparisons ?? metrics.visited ?? 0;
+    el.swap.textContent = metrics.swaps ?? metrics.pushed ?? 0;
+    el.depth.textContent = step.depth ?? (step.stack ? step.stack.length : 0);
+
     el.index.textContent = index;
     el.progress.value = String(index);
     el.stepText.textContent = `${index + 1} / ${player.total}`;
@@ -1326,8 +1775,20 @@ function parseInput(text) {
 }
 
 function build() {
+  const view = currentAlgo.view || 'array';
+  ensureRenderer(view);
+
+  // 切换指标名称：数组看比较/交换，树看访问/入栈
+  const isTree = view === 'tree';
+  el.lblA.textContent = isTree ? '已访问' : '比较次数';
+  el.lblB.textContent = isTree ? '入栈次数' : '交换次数';
+  el.lblC.textContent = isTree ? '栈内元素' : '递归深度';
+  el.inputWrap.classList.toggle('hidden', isTree);
+
+  if (isTree) renderer.setTree(currentAlgo.tree);
+
   const input = parseInput(el.input.value);
-  const steps = currentAlgo.run(input);
+  const steps = isTree ? currentAlgo.run() : currentAlgo.run(input);
   player.load(steps);
   el.speed.value = String(player.speed);
 }
