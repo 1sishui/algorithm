@@ -4,7 +4,7 @@
  * 这个文件只做装配，不写算法、不画图、不拼提示词。
  * 想加功能时，先想清楚该改哪个模块，再动手。
  */
-import { algorithms, findAlgorithm, findByKnowledgePoint } from './algorithms/registry.js';
+import { algorithms, findByKnowledgePoint } from './algorithms/registry.js';
 import { createArrayBars } from './render/arrayBars.js';
 import { createTreeView } from './render/treeView.js';
 import { Player } from './core/player.js';
@@ -13,6 +13,7 @@ import { diagnose } from './diagnosis/rules.js';
 import { diagnoseWithLLM, checkHealth, explainFailure } from './llm/client.js';
 import { createDiagnosisView } from './ui/diagnosisPanel.js';
 import { createMastery } from './ui/mastery.js';
+import { runUserCode, TEMPLATE } from './user/runner.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -44,8 +45,23 @@ const el = {
   lblA: $('lbl-a'),
   lblB: $('lbl-b'),
   lblC: $('lbl-c'),
-  inputWrap: $('input-wrap')
+  inputWrap: $('input-wrap'),
+  mycode: $('mycode'),
+  userCode: $('user-code'),
+  runCode: $('btn-run-code'),
+  templateBtn: $('btn-template'),
+  clearCode: $('btn-clear-code'),
+  codeStatus: $('user-code-status')
 };
+
+/** 下拉框里的“我的代码”入口 */
+const USER_ALGO = {
+  id: 'user.code',
+  name: '我的代码（自己写）',
+  brief: '在下方输入框里写 run(a, viz)',
+  view: 'array'
+};
+const menu = [...algorithms, USER_ALGO];
 
 let renderer = null;
 const mastery = createMastery(el.mastery);
@@ -98,6 +114,12 @@ function parseInput(text) {
 }
 
 function build() {
+  if (currentAlgo.id === USER_ALGO.id) {
+    el.mycode.open = true;
+    runMyCode();
+    return;
+  }
+
   const view = currentAlgo.view || 'array';
   ensureRenderer(view);
 
@@ -124,12 +146,82 @@ algorithms.forEach((algo) => {
   option.textContent = `${algo.name}（${algo.brief}）`;
   el.select.appendChild(option);
 });
+
+const userOption = document.createElement('option');
+userOption.value = USER_ALGO.id;
+userOption.textContent = `${USER_ALGO.name}（${USER_ALGO.brief}）`;
+el.select.appendChild(userOption);
+
 el.select.value = currentAlgo.id;
 
 el.select.addEventListener('change', () => {
-  currentAlgo = findAlgorithm(el.select.value);
+  currentAlgo = menu.find((algo) => algo.id === el.select.value) || algorithms[0];
   build();
   markActiveKnowledgePoint();
+});
+
+/* ---------------- 我的代码 ---------------- */
+
+const CODE_KEY = 'algo-agent:usercode';
+
+function setCodeStatus(text, kind) {
+  el.codeStatus.textContent = text;
+  el.codeStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+}
+
+function persistCode() {
+  try {
+    localStorage.setItem(CODE_KEY, el.userCode.value);
+  } catch {
+    /* 隐私模式下写不了，忽略 */
+  }
+}
+
+function runMyCode() {
+  ensureRenderer('array');
+  el.lblA.textContent = '比较次数';
+  el.lblB.textContent = '交换次数';
+  el.lblC.textContent = '递归深度';
+  el.inputWrap.classList.remove('hidden');
+
+  const input = parseInput(el.input.value);
+  const result = runUserCode(el.userCode.value, input);
+
+  persistCode();
+
+  if (!result.ok) {
+    setCodeStatus(result.error, 'bad');
+    if (result.steps && result.steps.length > 0) {
+      player.load(result.steps);
+      el.note.textContent = result.error;
+    }
+    return;
+  }
+
+  player.load(result.steps);
+  setCodeStatus(`运行成功，共 ${result.steps.length} 步`, 'ok');
+}
+
+try {
+  el.userCode.value = localStorage.getItem(CODE_KEY) || TEMPLATE;
+} catch {
+  el.userCode.value = TEMPLATE;
+}
+
+el.runCode.addEventListener('click', () => {
+  currentAlgo = USER_ALGO;
+  el.select.value = USER_ALGO.id;
+  runMyCode();
+});
+
+el.templateBtn.addEventListener('click', () => {
+  el.userCode.value = TEMPLATE;
+  setCodeStatus('已插入示例，点「运行我的代码」', 'muted');
+});
+
+el.clearCode.addEventListener('click', () => {
+  el.userCode.value = '';
+  setCodeStatus('', 'muted');
 });
 
 /* ---------------- 知识图谱侧边栏 ---------------- */

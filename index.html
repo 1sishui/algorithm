@@ -51,6 +51,21 @@
       <span><i id="lbl-c">递归深度</i> <b id="m-depth">0</b></span>
       <span>当前步骤 <b id="m-index">0</b></span>
     </div>
+
+    <details class="mycode" id="mycode">
+      <summary>写我自己的算法 → 可视化运行（JavaScript）</summary>
+      <p class="mycode-hint">
+        写一个 <code>function run(a, viz)</code>，在关键位置调用 <code>viz.compare / viz.swap / viz.markSorted / viz.done</code>，
+        <code>a</code> 就是上面输入框里的数组。点运行就能像内置算法一样播放。
+      </p>
+      <textarea id="user-code" spellcheck="false"></textarea>
+      <div class="mycode-actions">
+        <button id="btn-run-code" class="primary">运行我的代码</button>
+        <button id="btn-template">插入示例</button>
+        <button id="btn-clear-code">清空</button>
+        <span id="user-code-status" class="muted"></span>
+      </div>
+    </details>
   </main>
 
   <aside class="panel right">

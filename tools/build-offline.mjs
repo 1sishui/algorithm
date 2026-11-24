@@ -23,6 +23,7 @@ const MODULES = [
   'src/algorithms/tree/model.js',
   'src/algorithms/tree/traversal.js',
   'src/llm/client.js',
+  'src/user/runner.js',
   'src/ui/diagnosisPanel.js',
   'src/algorithms/sort/quick.js',
   'src/algorithms/sort/bubble.js',
