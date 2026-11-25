@@ -17,18 +17,18 @@ if errorlevel 1 (
   goto done
 )
 
-echo [3/3] 推送到远程...
-git push -u origin main
+echo [3/3] 推送当前分支...
+git push -u origin HEAD
 if errorlevel 1 (
   echo.
   echo       推送失败，常见原因：
   echo       1. 没登录 GitHub —— 再运行一次，在弹出的窗口里登录
-  echo       2. 网络连不上 GitHub —— 换网络，或改用 Gitee
-  echo       3. 仓库地址不对 —— 运行 git remote -v 检查
+  echo       2. 网络连不上 GitHub —— 开代理，或改用 Gitee
+  echo       3. 当前在 main 分支且开了保护 —— 先开分支：git checkout -b feat/姓名-功能
   echo       把上面的报错截图发给 AI 即可。
 ) else (
   echo.
-  echo       推送成功，去网页刷新看看。
+  echo       推送成功。如果这是在功能分支上，去网页开 PR 合并。
 )
 
 :done
