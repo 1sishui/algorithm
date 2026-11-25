@@ -588,6 +588,8 @@ details pre { margin-top: 6px; }
 }
 #cookie-status { margin: 6px 0 10px; font-size: 12px; }
 
+.diff-row .cnt .sub { color: var(--muted); font-size: 10px; margin-left: 3px; }
+
 </style>
 </head>
 <body>
@@ -4199,8 +4201,22 @@ if (luoguUid) el.cookieUid.value = luoguUid;
 function saveSubmissions() {
   try {
     localStorage.setItem(LUOGU_KEY, JSON.stringify(submissions));
+    return;
   } catch {
-    /* 忽略 */
+    /* 多半是超了 5MB 配额，下面瘦身后再试一次 */
+  }
+
+  // 只保留最近 40 段代码，其余丢掉（统计不受影响）
+  const withCode = submissions.filter((r) => r.code);
+  const keep = new Set(withCode.slice(-40).map((r) => r.id));
+  const slim = submissions.map((r) => (r.code && !keep.has(r.id) ? { ...r, code: undefined } : r));
+
+  try {
+    localStorage.setItem(LUOGU_KEY, JSON.stringify(slim));
+    submissions = slim;
+    setCookieStatus('本地存储接近上限：只保留了最近 40 段代码，统计数据不受影响', 'bad');
+  } catch {
+    setCookieStatus('本地存储已满，这次的数据没能保存（刷新后会回到上次状态）', 'bad');
   }
 }
 
@@ -4269,7 +4285,7 @@ function mergeSubmissions(incoming) {
   }
   submissions = [...map.values()]
     .sort((a, b) => new Date(a.submittedAt || 0) - new Date(b.submittedAt || 0))
-    .slice(-3000);
+    .slice(-10000);
 }
 
 /** 概览：总量 + 难度分布 + 算法分布 */
@@ -4280,10 +4296,10 @@ function renderLuoguSummary() {
   }
 
   const stats = summarizeSubmissions(submissions);
-  const max = Math.max(...stats.histogram.slice(1), 1);
+  const max = Math.max(...stats.histogram, 1);
 
   const diffRows = [];
-  for (let level = 1; level <= 7; level += 1) {
+  for (let level = 0; level <= 7; level += 1) {
     const count = stats.histogram[level] || 0;
     if (count === 0) continue;
     diffRows.push(`
@@ -4294,26 +4310,39 @@ function renderLuoguSummary() {
       </div>`);
   }
 
-  // 算法分布：只统计「通过了的题」，按题目标签归并
-  const solvedPids = [...new Set(submissions.filter((r) => r.accepted).map((r) => r.pid).filter(Boolean))];
-  const algoCount = new Map();
-  for (const pid of solvedPids) {
+  // 算法分布：覆盖所有做过的题（含没通过的），每条显示「做过 N（通过 M）」
+  const allPids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
+  const problemInfo = new Map();
+  for (const record of submissions) {
+    if (!record.pid) continue;
+    const entry = problemInfo.get(record.pid) || { solved: false };
+    if (record.accepted) entry.solved = true;
+    problemInfo.set(record.pid, entry);
+  }
+
+  const algoMap = new Map();
+  for (const pid of allPids) {
     for (const tag of new Set(pidTags[pid] || [])) {
-      algoCount.set(tag, (algoCount.get(tag) || 0) + 1);
+      const entry = algoMap.get(tag) || { total: 0, solved: 0 };
+      entry.total += 1;
+      if (problemInfo.get(pid) && problemInfo.get(pid).solved) entry.solved += 1;
+      algoMap.set(tag, entry);
     }
   }
-  const allPids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
+
   const taggedCount = allPids.filter((pid) => (pidTags[pid] || []).length > 0).length;
-  const algoList = [...algoCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-  const algoMax = Math.max(...algoList.map(([, n]) => n), 1);
+  const algoList = [...algoMap.entries()].sort((a, b) => b[1].total - a[1].total).slice(0, 8);
+  const algoMax = Math.max(...algoList.map(([, value]) => value.total), 1);
   const algoRows = algoList.map(
-    ([tag, count]) => `
+    ([tag, value]) => `
       <div class="diff-row">
         <span class="lvl">${escapeText(tag)}</span>
-        <span class="track"><span class="fill" style="width:${Math.round((count / algoMax) * 100)}%"></span></span>
-        <span class="cnt">${count}</span>
+        <span class="track"><span class="fill" style="width:${Math.round((value.total / algoMax) * 100)}%"></span></span>
+        <span class="cnt">${value.total}<span class="sub">通${value.solved}</span></span>
       </div>`
   );
+
+  const difficultyTotal = stats.histogram.reduce((a, b) => a + b, 0);
 
   el.luoguSummary.innerHTML = `
     <div class="luogu-stats">
@@ -4323,10 +4352,11 @@ function renderLuoguSummary() {
       <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
       <span>标签覆盖 <b>${taggedCount}/${stats.problems}</b></span>
     </div>
+    <div class="luogu-subtitle">难度分布（合计 ${difficultyTotal} 道）</div>
     <div class="diff-bars">${diffRows.join('')}</div>
     ${
       algoRows.length
-        ? `<div class="luogu-subtitle">算法分布（仅已通过题目）</div><div class="diff-bars">${algoRows.join('')}</div>`
+        ? `<div class="luogu-subtitle">算法分布（合计 ${taggedCount} 道，括号内为已通过数）</div><div class="diff-bars">${algoRows.join('')}</div>`
         : `<div class="algo-empty">${
             taggedCount === 0
               ? '还没有题目标签，点「同步做题情况」会自动抓取。'
