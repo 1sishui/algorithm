@@ -4,49 +4,50 @@
 
 ## 多人协作（Git）
 
-代码用 Git 管理。四个人的约定很简单：
+**仓库地址**：https://github.com/1sishui/algorithm
 
-| 每天收工 | 双击 `上传代码.bat`（会自动提交并推送） |
-| 每天开工 | 先 `git pull` 拉一下别人的改动，再动手 |
-| 千万别传 | `.env`（里面有 key，已被 `.gitignore` 排除） |
-
-第一次把仓库放到网上（只需做一次）：
-
-1. 在 GitHub（或 Gitee）上新建一个**空仓库**，名字随意，例如 `algo-agent`，**不要**勾选“初始化 README”
-2. 复制仓库地址，在本文件夹打开 PowerShell，执行：
+`main` 已开启分支保护，**不能直接推**，必须走 PR：
 
 ```powershell
-git remote add origin https://github.com/你的用户名/algo-agent.git
-git push -u origin main
+git pull --rebase                  # 开工先拉
+git checkout -b feat/姓名-功能      # 开自己的分支
+# ……改代码……
+双击 测试.bat                       # 本地自测
+git add -A
+git commit -m "一句话说明改了什么"
+git push -u origin feat/姓名-功能
 ```
 
-3. 弹出登录框就按提示登录一次，之后就不用再输了。
+然后去 GitHub 点 **Compare & pull request**，等 CI 绿 + 1 人 review 后合并。
+
+| 每天收工 | 双击 `上传代码.bat`（提交 + 推送当前分支） |
+| 每天开工 | `git pull --rebase` |
+| 千万别传 | `.env`（有 key）、`算法学习智能体-离线版.html`（构建产物） |
 
 队友第一次拿到代码：
 
 ```powershell
-git clone https://github.com/你的用户名/algo-agent.git
+git clone https://github.com/1sishui/algorithm.git
 ```
 
-> 提交者信息已经设成「熊廷俊 / xiongtingjun@example.com」，换成自己的真实邮箱只需：
-> `git config user.email "你的邮箱"`（只影响这个仓库）。
+> 详细上手步骤见 `ONBOARDING.md`；分工见 `TASKS.md`；项目背景见 `HANDOFF.md`。
 
-## 怎么跑（两种方式，任选）
+## 怎么跑
 
-**方式一（最省事）：双击 `算法学习智能体-离线版.html`**
-
-所有代码都打包进这一个文件，不依赖 Python、不依赖网络，双击直接用浏览器打开。
-适合给老师、同学演示，也适合拷到 U 盘里带走。
-
-**方式二：双击 `启动.bat`**
-
-它会调用 `serve.py` 起一个本地服务，自动打开 http://127.0.0.1:8123/ 。
+**双击 `启动.bat`**：调用 `serve.py` 起本地服务，自动打开 http://127.0.0.1:8123/ 。
 
 > 会弹出一个黑色窗口，那是服务本身，**别关**；关掉网页就打不开了。
-> 端口 8123 被占用时，脚本会提示并直接打开已有服务。
-> 电脑上没有 Python 时，脚本会自动改用离线版打开。
+> 端口 8123 被占用时，脚本会先关掉旧进程再启动。
+> 电脑上没有 Python 时，脚本会提示装 Python。
 
-**两种方式有什么区别**：离线版是打包产物，改了 `src/` 里的源码后需要重新生成（让我来跑 `tools/build-offline.mjs`）；`启动.bat` 直接读源码，改完刷新浏览器就能看到效果，适合开发时用。
+**关于离线版**：`算法学习智能体-离线版.html` 是打包产物，**不在仓库里**（避免每次冲突）。
+需要给老师/同学演示时，由负责人本地生成：
+
+```powershell
+node tools/build-offline.mjs .
+```
+
+生成后这一个文件就能双击打开，不依赖 Python、不联网。
 
 ## 现在能做什么
 
@@ -264,10 +265,10 @@ python test/spotcheck.py          # 先启动服务，再另开一个窗口跑
 algo-agent/
 ├─ index.html               # 开发版入口（需要本地服务）
 ├─ 启动.bat                 # 双击：起服务 + 打开浏览器
+├─ 测试.bat                 # 双击：跑 JS/Python 自测
 
 ├─ serve.py                 # 本地服务：静态文件 + /api/diagnose 代理
 ├─ .env.example             # key 配置模板（复制为 .env 使用）
-├─ 算法学习智能体-离线版.html  # 打包产物：双击即开，不依赖环境
 ├─ server/llm_proxy.py      # 大模型代理：提示词、调用、输出收敛、缓存、限流
 ├─ supabase/functions/diagnose/index.ts  # 生产版代理（部署到 Supabase）
 ├─ src/
