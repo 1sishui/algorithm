@@ -628,6 +628,7 @@ details pre { margin-top: 6px; }
       <div class="mycode-actions">
         <button id="btn-save-cookie" class="primary">保存并同步</button>
         <button id="btn-sync-luogu">立即同步</button>
+        <button id="btn-fetch-code">抓取代码并分析修改</button>
         <button id="btn-clear-cookie">清除</button>
         <span id="cookie-status" class="muted"></span>
       </div>
@@ -2708,7 +2709,23 @@ async function syncLuoguWithCookie(uid, cookie, options = {}) {
 
   return { ok: true, records: all, total };
 }
-return { syncLuoguWithCookie };
+/** 取单次提交的代码（只有本人可见，必须带 Cookie） */
+async function fetchRecordCode(id, cookie) {
+  try {
+    const response = await fetch('/api/luogu/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, cookie })
+    });
+    if (response.status === 404 || response.status === 501) {
+      return { ok: false, message: '当前服务是旧版本，请重启 启动.bat' };
+    }
+    return await response.json();
+  } catch {
+    return { ok: false, message: '连不上本地服务' };
+  }
+}
+return { syncLuoguWithCookie, fetchRecordCode };
 })();
 
 /* ===== src/assessment/submissions.js ===== */
@@ -2724,6 +2741,7 @@ const __m_assessment_submissions = (function () {
  * 同样声明：这些是行为代理指标，不是理解度真值。
  */
 const { difficultyLabel } = __m_import_luogu;
+const { analyzeCorrection } = __m_assessment_correction;
 
 function clamp(value, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
@@ -2761,11 +2779,18 @@ function groupByProblem(records) {
         attempts: 0,
         accepted: false,
         firstAcceptedAt: null,
-        lastAt: null
+        lastAt: null,
+        items: []
       });
     }
     const item = map.get(key);
     item.attempts += 1;
+    item.items.push({
+      code: record.code || null,
+      accepted: record.accepted === true,
+      status: record.status,
+      submittedAt: record.submittedAt
+    });
     if (!item.difficulty && record.difficulty) item.difficulty = record.difficulty;
     if (record.accepted && !item.accepted) {
       item.accepted = true;
@@ -2791,27 +2816,38 @@ function computeSubmissionFeatures(records) {
 
   const dims = {};
 
-  /* 1. 错误修正：从“第一次提交”到“通过”用了几次，指数衰减，永远落在 0–100 */
+  /* 1. 错误修正：优先看“每次提交改了什么”，没有代码时退回按次数折算 */
   {
-    const scores = problems.map((item) => {
-      if (!item.accepted) return 0; // 一直没做出来，视为没有收敛
-      // 1 次通过 = 100；2 次 ≈ 85；5 次 ≈ 52；10 次 ≈ 23；不会出现负数
-      return 100 * Math.pow(0.85, item.attempts - 1);
+    const analyses = problems.map((item) => {
+      const codes = (item.items || []).filter((x) => x.code);
+      if (codes.length >= 2) {
+        return analyzeCorrection(item.items) || { score: 0, withCode: false };
+      }
+      return {
+        score: item.accepted ? 100 * Math.pow(0.85, item.attempts - 1) : 0,
+        withCode: false
+      };
     });
-    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
-    const neverSolved = problems.length - solved.length;
-    const solvedAvg =
-      solved.length > 0
-        ? solved.reduce((sum, item) => sum + 100 * Math.pow(0.85, item.attempts - 1), 0) / solved.length
-        : 0;
 
-    dims.fix = {
-      value: Math.round(clamp(avg)),
-      detail:
-        `洛谷：共 ${problems.length} 题，通过 ${solved.length} 题` +
+    const scores = analyses.map((a) => a.score);
+    const avg = scores.reduce((a, b) => a + b, 0) / Math.max(1, scores.length);
+    const neverSolved = problems.length - solved.length;
+    const coded = analyses.filter((a) => a.withCode);
+    const transitions = coded.reduce((sum, a) => sum + (a.transitions || 0), 0);
+    const small = coded.reduce((sum, a) => sum + (a.smallEdits || 0), 0);
+    const rewrites = coded.reduce((sum, a) => sum + (a.rewrites || 0), 0);
+    const suspected = coded.reduce((sum, a) => sum + (a.suspected || 0), 0);
+
+    const detail = coded.length
+      ? `洛谷：${problems.length} 题，其中 ${coded.length} 题有完整代码可比对；` +
+        `共 ${transitions} 次修改，小步改 ${small} 次、整段重写 ${rewrites} 次` +
+        (suspected ? `、疑似直接粘贴 ${suspected} 次` : '') +
+        '（按“改得越准、次数越少”给分）'
+      : `洛谷：共 ${problems.length} 题，通过 ${solved.length} 题` +
         (neverSolved ? `，未通过 ${neverSolved} 题（记 0 分）` : '') +
-        `；通过题平均 ${solvedAvg.toFixed(0)} 分（按首次通过前的提交次数衰减）`
-    };
+        '；暂无代码明细，按提交次数折算';
+
+    dims.fix = { value: Math.round(clamp(avg)), detail };
   }
 
   /* 2. 题型迁移：通过率 —— 能把多少“做过的题”真正做出来 */
@@ -3214,7 +3250,7 @@ const { runUserCode, TEMPLATE } = __m_user_runner;
 const { computeFeatures } = __m_assessment_features;
 const { computeSubmissionFeatures } = __m_assessment_submissions;
 const { normalizeRecords, summarizeSubmissions, difficultyLabel } = __m_import_luogu;
-const { syncLuoguWithCookie } = __m_import_luoguClient;
+const { syncLuoguWithCookie, fetchRecordCode } = __m_import_luoguClient;
 const { pushRecord, loadRecords, saveRecords, clearAll, summarize, serialize, describe, groupBy } = __m_user_history;
 
 const $ = (id) => document.getElementById(id);
@@ -3270,6 +3306,7 @@ const el = {
   saveCookie: $('btn-save-cookie'),
   syncLuoguBtn: $('btn-sync-luogu'),
   clearCookie: $('btn-clear-cookie'),
+  fetchCode: $('btn-fetch-code'),
   cookieStatus: $('cookie-status')
 };
 
@@ -3807,6 +3844,60 @@ async function syncLuoguNow({ full = false, quiet = false } = {}) {
 }
 
 el.saveCookie.addEventListener('click', () => syncLuoguNow({ full: true }));
+
+/**
+ * 抓取每次提交的代码，用来分析“错误修正”的过程质量。
+ * 只抓最近若干道「提交过多次」的题，控制请求量，别把洛谷打急。
+ */
+el.fetchCode.addEventListener('click', async () => {
+  const form = readCookieForm();
+  if (form.error) {
+    setCookieStatus(form.error, 'bad');
+    return;
+  }
+  if (submissions.length === 0) {
+    setCookieStatus('先同步记录，再来抓代码', 'bad');
+    return;
+  }
+
+  const byProblem = new Map();
+  for (const record of submissions) {
+    if (!byProblem.has(record.pid)) byProblem.set(record.pid, []);
+    byProblem.get(record.pid).push(record);
+  }
+
+  const targets = [...byProblem.values()]
+    .filter((list) => list.length >= 2)
+    .slice(-15)
+    .map((list) => list.slice(-6));
+
+  const total = targets.reduce((sum, list) => sum + list.filter((r) => !r.code).length, 0);
+  if (total === 0) {
+    setCookieStatus('这些题的代码都已经抓过了', 'ok');
+    return;
+  }
+
+  let done = 0;
+  let ok = 0;
+
+  for (const list of targets) {
+    for (const record of list) {
+      if (record.code) continue;
+      const result = await fetchRecordCode(record.id, form.cookie);
+      if (result && result.ok && result.code) {
+        record.code = result.code;
+        ok += 1;
+      }
+      done += 1;
+      setCookieStatus(`抓取代码 ${done}/${total}，成功 ${ok}（慢是正常的）`, 'muted');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  saveSubmissions();
+  refreshFeatures();
+  setCookieStatus(`已抓取 ${ok} 段代码，六维已重新计算`, 'ok');
+});
 el.syncLuoguBtn.addEventListener('click', () => syncLuoguNow({ full: false }));
 
 el.clearCookie.addEventListener('click', () => {

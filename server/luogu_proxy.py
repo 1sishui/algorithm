@@ -239,3 +239,45 @@ def _plain(text):
     cleaned = _TAG.sub(" ", text)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned[:80]
+
+def fetch_record_code(record_id, cookie="", timeout=15):
+    """取某次提交的代码（只有本人可见，所以要带 Cookie）。"""
+    rid = str(record_id or "").strip()
+    if not rid.isdigit():
+        return 400, {"ok": False, "reason": "bad_id", "message": "提交 ID 应该是数字"}
+    if not cookie or len(cookie) < 10:
+        return 400, {"ok": False, "reason": "no_cookie", "message": "Cookie 为空"}
+
+    url = f"{LUOGU_BASE}/record/{rid}"
+    try:
+        status, text, ctype, final = _get(url, cookie=cookie, accept="text/html", ajax=False, timeout=timeout)
+    except PermissionError:
+        return 200, {"ok": False, "reason": "forbidden", "message": "看不到这次提交（可能不是本人记录）"}
+    except socket.timeout:
+        return 200, {"ok": False, "reason": "timeout", "message": "洛谷响应超时"}
+    except Exception as exc:  # noqa: BLE001
+        return 200, {"ok": False, "reason": "network", "message": f"连不上洛谷：{exc}"}
+
+    data = _parse_payload(text)
+    if not data:
+        return 200, {"ok": False, "reason": "no_data", "message": "页面里没解析出提交详情"}
+
+    record = (data.get("currentData") or {}).get("record") or data.get("record") or {}
+    code = record.get("code") or record.get("source") or ""
+
+    if not code and record.get("codeHtml"):
+        import html as _html
+
+        code = _html.unescape(re.sub(r"<[^>]+>", "", record.get("codeHtml")))
+
+    if not code:
+        return 200, {"ok": False, "reason": "no_code", "message": "这次提交没有代码（可能被隐藏）"}
+
+    return 200, {
+        "ok": True,
+        "id": rid,
+        "code": code,
+        "language": record.get("language") or "",
+        "status": record.get("status"),
+        "time": record.get("time"),
+    }

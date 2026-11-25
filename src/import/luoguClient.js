@@ -72,3 +72,19 @@ export async function syncLuoguWithCookie(uid, cookie, options = {}) {
 
   return { ok: true, records: all, total };
 }
+/** 取单次提交的代码（只有本人可见，必须带 Cookie） */
+export async function fetchRecordCode(id, cookie) {
+  try {
+    const response = await fetch('/api/luogu/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, cookie })
+    });
+    if (response.status === 404 || response.status === 501) {
+      return { ok: false, message: '当前服务是旧版本，请重启 启动.bat' };
+    }
+    return await response.json();
+  } catch {
+    return { ok: false, message: '连不上本地服务' };
+  }
+}

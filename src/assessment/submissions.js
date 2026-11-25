@@ -9,6 +9,7 @@
  * 同样声明：这些是行为代理指标，不是理解度真值。
  */
 import { difficultyLabel } from '../import/luogu.js';
+import { analyzeCorrection } from './correction.js';
 
 function clamp(value, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
@@ -46,11 +47,18 @@ export function groupByProblem(records) {
         attempts: 0,
         accepted: false,
         firstAcceptedAt: null,
-        lastAt: null
+        lastAt: null,
+        items: []
       });
     }
     const item = map.get(key);
     item.attempts += 1;
+    item.items.push({
+      code: record.code || null,
+      accepted: record.accepted === true,
+      status: record.status,
+      submittedAt: record.submittedAt
+    });
     if (!item.difficulty && record.difficulty) item.difficulty = record.difficulty;
     if (record.accepted && !item.accepted) {
       item.accepted = true;
@@ -76,27 +84,38 @@ export function computeSubmissionFeatures(records) {
 
   const dims = {};
 
-  /* 1. 错误修正：从“第一次提交”到“通过”用了几次，指数衰减，永远落在 0–100 */
+  /* 1. 错误修正：优先看“每次提交改了什么”，没有代码时退回按次数折算 */
   {
-    const scores = problems.map((item) => {
-      if (!item.accepted) return 0; // 一直没做出来，视为没有收敛
-      // 1 次通过 = 100；2 次 ≈ 85；5 次 ≈ 52；10 次 ≈ 23；不会出现负数
-      return 100 * Math.pow(0.85, item.attempts - 1);
+    const analyses = problems.map((item) => {
+      const codes = (item.items || []).filter((x) => x.code);
+      if (codes.length >= 2) {
+        return analyzeCorrection(item.items) || { score: 0, withCode: false };
+      }
+      return {
+        score: item.accepted ? 100 * Math.pow(0.85, item.attempts - 1) : 0,
+        withCode: false
+      };
     });
-    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
-    const neverSolved = problems.length - solved.length;
-    const solvedAvg =
-      solved.length > 0
-        ? solved.reduce((sum, item) => sum + 100 * Math.pow(0.85, item.attempts - 1), 0) / solved.length
-        : 0;
 
-    dims.fix = {
-      value: Math.round(clamp(avg)),
-      detail:
-        `洛谷：共 ${problems.length} 题，通过 ${solved.length} 题` +
+    const scores = analyses.map((a) => a.score);
+    const avg = scores.reduce((a, b) => a + b, 0) / Math.max(1, scores.length);
+    const neverSolved = problems.length - solved.length;
+    const coded = analyses.filter((a) => a.withCode);
+    const transitions = coded.reduce((sum, a) => sum + (a.transitions || 0), 0);
+    const small = coded.reduce((sum, a) => sum + (a.smallEdits || 0), 0);
+    const rewrites = coded.reduce((sum, a) => sum + (a.rewrites || 0), 0);
+    const suspected = coded.reduce((sum, a) => sum + (a.suspected || 0), 0);
+
+    const detail = coded.length
+      ? `洛谷：${problems.length} 题，其中 ${coded.length} 题有完整代码可比对；` +
+        `共 ${transitions} 次修改，小步改 ${small} 次、整段重写 ${rewrites} 次` +
+        (suspected ? `、疑似直接粘贴 ${suspected} 次` : '') +
+        '（按“改得越准、次数越少”给分）'
+      : `洛谷：共 ${problems.length} 题，通过 ${solved.length} 题` +
         (neverSolved ? `，未通过 ${neverSolved} 题（记 0 分）` : '') +
-        `；通过题平均 ${solvedAvg.toFixed(0)} 分（按首次通过前的提交次数衰减）`
-    };
+        '；暂无代码明细，按提交次数折算';
+
+    dims.fix = { value: Math.round(clamp(avg)), detail };
   }
 
   /* 2. 题型迁移：通过率 —— 能把多少“做过的题”真正做出来 */

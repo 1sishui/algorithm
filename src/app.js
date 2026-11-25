@@ -20,7 +20,7 @@ import { runUserCode, TEMPLATE } from './user/runner.js';
 import { computeFeatures } from './assessment/features.js';
 import { computeSubmissionFeatures } from './assessment/submissions.js';
 import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './import/luogu.js';
-import { syncLuoguWithCookie } from './import/luoguClient.js';
+import { syncLuoguWithCookie, fetchRecordCode } from './import/luoguClient.js';
 import {
   pushRecord,
   loadRecords,
@@ -85,6 +85,7 @@ const el = {
   saveCookie: $('btn-save-cookie'),
   syncLuoguBtn: $('btn-sync-luogu'),
   clearCookie: $('btn-clear-cookie'),
+  fetchCode: $('btn-fetch-code'),
   cookieStatus: $('cookie-status')
 };
 
@@ -622,6 +623,60 @@ async function syncLuoguNow({ full = false, quiet = false } = {}) {
 }
 
 el.saveCookie.addEventListener('click', () => syncLuoguNow({ full: true }));
+
+/**
+ * 抓取每次提交的代码，用来分析“错误修正”的过程质量。
+ * 只抓最近若干道「提交过多次」的题，控制请求量，别把洛谷打急。
+ */
+el.fetchCode.addEventListener('click', async () => {
+  const form = readCookieForm();
+  if (form.error) {
+    setCookieStatus(form.error, 'bad');
+    return;
+  }
+  if (submissions.length === 0) {
+    setCookieStatus('先同步记录，再来抓代码', 'bad');
+    return;
+  }
+
+  const byProblem = new Map();
+  for (const record of submissions) {
+    if (!byProblem.has(record.pid)) byProblem.set(record.pid, []);
+    byProblem.get(record.pid).push(record);
+  }
+
+  const targets = [...byProblem.values()]
+    .filter((list) => list.length >= 2)
+    .slice(-15)
+    .map((list) => list.slice(-6));
+
+  const total = targets.reduce((sum, list) => sum + list.filter((r) => !r.code).length, 0);
+  if (total === 0) {
+    setCookieStatus('这些题的代码都已经抓过了', 'ok');
+    return;
+  }
+
+  let done = 0;
+  let ok = 0;
+
+  for (const list of targets) {
+    for (const record of list) {
+      if (record.code) continue;
+      const result = await fetchRecordCode(record.id, form.cookie);
+      if (result && result.ok && result.code) {
+        record.code = result.code;
+        ok += 1;
+      }
+      done += 1;
+      setCookieStatus(`抓取代码 ${done}/${total}，成功 ${ok}（慢是正常的）`, 'muted');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  saveSubmissions();
+  refreshFeatures();
+  setCookieStatus(`已抓取 ${ok} 段代码，六维已重新计算`, 'ok');
+});
 el.syncLuoguBtn.addEventListener('click', () => syncLuoguNow({ full: false }));
 
 el.clearCookie.addEventListener('click', () => {
