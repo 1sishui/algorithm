@@ -13,11 +13,13 @@ const TIMEOUT = 20000;
  * @param {{maxPages?: number, onProgress?: (page:number, got:number, total:number|null)=>void}} options
  */
 export async function syncLuoguWithCookie(uid, cookie, options = {}) {
-  const maxPages = options.maxPages ?? 3;
+  // 一直翻到没有新记录为止；maxPages 只是保险丝，防止接口异常时死循环
+  const maxPages = options.maxPages ?? 200;
   const all = [];
   let total = null;
+  let page = 1;
 
-  for (let page = 1; page <= maxPages; page += 1) {
+  while (page <= maxPages) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT);
 
@@ -56,7 +58,16 @@ export async function syncLuoguWithCookie(uid, cookie, options = {}) {
     all.push(...(data.records || []));
     if (options.onProgress) options.onProgress(page, all.length, total);
 
-    if ((data.records || []).length < (data.perPage || 20)) break;
+    const got = (data.records || []).length;
+    if (got === 0) break;
+
+    // 已知总数时算一下还要翻几页，避免无意义的空请求
+    if (typeof total === 'number' && all.length >= total) break;
+    if (got < (data.perPage || 20)) break;
+
+    page += 1;
+    // 给洛谷留点喘息时间，别把人家打急了
+    await new Promise((resolve) => setTimeout(resolve, 120));
   }
 
   return { ok: true, records: all, total };

@@ -594,9 +594,12 @@ async function syncLuoguNow({ full = false, quiet = false } = {}) {
   if (!quiet) setCookieStatus('同步中…', 'muted');
 
   const result = await syncLuoguWithCookie(form.uid, form.cookie, {
-    maxPages: full ? 5 : 1,
-    onProgress: (page, got) => {
-      if (!quiet) setCookieStatus(`同步中… 第 ${page} 页，共 ${got} 条`, 'muted');
+    // full：一直翻到最后一页；增量：只拉前 2 页看有没有新提交
+    maxPages: full ? 200 : 2,
+    onProgress: (page, got, total) => {
+      if (quiet) return;
+      const tail = typeof total === 'number' ? ` / 共 ${total} 条` : '';
+      setCookieStatus(`同步中… 第 ${page} 页，已拿到 ${got} 条${tail}`, 'muted');
     }
   });
 
