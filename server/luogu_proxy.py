@@ -288,7 +288,7 @@ _TAG_CACHE = {"map": {}, "at": 0}
 
 
 def _tag_map():
-    """洛谷的标签字典：/​_lfe/tags → {id: 名称}，缓存一天。"""
+    """洛谷标签字典：/_lfe/tags → {id: {name, type, parent}}，缓存一天。"""
     global _TAG_CACHE
     if _TAG_CACHE["map"] and time.time() - _TAG_CACHE["at"] < 86400:
         return _TAG_CACHE["map"]
@@ -301,15 +301,38 @@ def _tag_map():
         mapping = {}
         for tag in data.get("tags", []):
             if isinstance(tag, dict) and tag.get("id") is not None:
-                mapping[int(tag["id"])] = str(tag.get("name") or "")
+                mapping[int(tag["id"])] = {
+                    "name": str(tag.get("name") or "").replace("\ufeff", "").strip(),
+                    "type": tag.get("type"),
+                    "parent": tag.get("parent"),
+                }
         _TAG_CACHE = {"map": mapping, "at": time.time()}
         return mapping
     except Exception:  # noqa: BLE001
         return {}
 
 
+def _top_category(tag_id, mapping):
+    """沿 parent 往上找到最顶层分类（如 并查集 → 数据结构）。"""
+    seen = set()
+    current = tag_id
+    name = ""
+    while current is not None and current not in seen:
+        seen.add(current)
+        item = mapping.get(int(current))
+        if not item:
+            break
+        if item["name"]:
+            name = item["name"]
+        parent = item.get("parent")
+        if parent is None:
+            break
+        current = parent
+    return name
+
+
 def fetch_problem_tags(pid, cookie="", timeout=15):
-    """取题目的算法标签（如 动态规划、二分），用于判断“强势/弱势算法”。"""
+    """取题目的算法标签：叶子标签 + 顶层分类。"""
     pid = str(pid or "").strip()
     if not pid or not re.match(r"^[A-Za-z0-9_]+$", pid):
         return 400, {"ok": False, "reason": "bad_pid", "message": "题号不合法"}
@@ -328,25 +351,44 @@ def fetch_problem_tags(pid, cookie="", timeout=15):
 
     problem = (data.get("currentData") or {}).get("problem") or data.get("problem") or {}
     raw_tags = problem.get("tags") or []
-    names = _tag_map()
+    mapping = _tag_map()
 
-    resolved = []
+    tags = []
+    categories = []
+
     for tag in raw_tags:
         if isinstance(tag, dict):
-            name = tag.get("name") or ""
+            name = str(tag.get("name") or "").replace("\ufeff", "").strip()
+            kind = tag.get("type")
         else:
             try:
-                name = names.get(int(tag), "")
+                info = mapping.get(int(tag))
             except (TypeError, ValueError):
-                name = ""
-        name = str(name).strip()
-        if name and name not in resolved:
-            resolved.append(name)
+                info = None
+            if not info:
+                continue
+            name = info["name"].strip()
+            kind = info["type"]
+
+        if not name:
+            continue
+        # type=2 才是算法标签；年份(4)、比赛来源(3/6) 一律不要
+        if kind is not None and int(kind) != 2:
+            continue
+
+        if name not in tags:
+            tags.append(name)
+
+        if not isinstance(tag, dict):
+            category = _top_category(int(tag), mapping)
+            if category and category not in categories and category != name:
+                categories.append(category)
 
     return 200, {
         "ok": True,
         "pid": pid,
         "title": problem.get("name") or problem.get("title") or "",
         "difficulty": problem.get("difficulty"),
-        "tags": resolved[:8],
+        "tags": tags[:8],
+        "categories": categories[:5],
     }

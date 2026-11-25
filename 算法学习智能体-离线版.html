@@ -4337,6 +4337,16 @@ if (clientId && luoguUid) {
   setCookieStatus(`已绑定 UID ${luoguUid}`, 'ok');
 }
 
+/** 兼容两种存储：老格式是数组，新格式是 { tags, categories } */
+function tagEntry(pid) {
+  const value = pidTags[pid];
+  if (!value) return { tags: [], categories: [] };
+  if (Array.isArray(value)) return { tags: value, categories: value };
+  const tags = Array.isArray(value.tags) ? value.tags : [];
+  const categories = Array.isArray(value.categories) && value.categories.length ? value.categories : tags;
+  return { tags, categories };
+}
+
 function readCookieForm() {
   const id = String(el.cookieClientId.value || '')
     .trim()
@@ -4437,7 +4447,7 @@ function renderLuoguSummary() {
 
   const algoMap = new Map();
   for (const pid of allPids) {
-    for (const tag of new Set(pidTags[pid] || [])) {
+    for (const tag of new Set(tagEntry(pid).categories)) {
       const entry = algoMap.get(tag) || { total: 0, solved: 0 };
       entry.total += 1;
       if (problemInfo.get(pid) && problemInfo.get(pid).solved) entry.solved += 1;
@@ -4445,7 +4455,7 @@ function renderLuoguSummary() {
     }
   }
 
-  const taggedCount = allPids.filter((pid) => (pidTags[pid] || []).length > 0).length;
+  const taggedCount = allPids.filter((pid) => tagEntry(pid).tags.length > 0).length;
   const algoList = [...algoMap.entries()].sort((a, b) => b[1].total - a[1].total).slice(0, 8);
   const algoMax = Math.max(...algoList.map(([, value]) => value.total), 1);
 
@@ -4586,7 +4596,7 @@ async function syncTags(form) {
   const grab = async (pid) => {
     const result = await fetchProblemTags(pid, form.cookie);
     if (result && result.ok) {
-      pidTags[pid] = result.tags || [];
+      pidTags[pid] = { tags: result.tags || [], categories: result.categories || [] };
       return true;
     }
     return false;
@@ -4614,7 +4624,7 @@ async function syncTags(form) {
   }
 
   savePidTags();
-  const tagged = pids.filter((p) => (pidTags[p] || []).length > 0).length;
+  const tagged = pids.filter((p) => tagEntry(p).tags.length > 0).length;
   return { ok: true, added: ok, failed: failed.length, total: pids.length, tagged };
 }
 
@@ -4818,7 +4828,7 @@ function computeAlgorithmStats() {
 
   const byTag = new Map();
   for (const [pid, info] of byProblem) {
-    const tags = usingCode ? codeTagsByProblem.get(pid) : pidTags[pid];
+    const tags = usingCode ? codeTagsByProblem.get(pid) : tagEntry(pid).categories;
     if (!tags || tags.length === 0) continue;
     for (const tag of new Set(tags)) {
       if (!byTag.has(tag)) byTag.set(tag, { tag, problems: 0, solved: 0, attempts: 0 });
