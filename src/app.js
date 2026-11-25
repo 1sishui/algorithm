@@ -20,6 +20,7 @@ import { runUserCode, TEMPLATE } from './user/runner.js';
 import { computeFeatures } from './assessment/features.js';
 import { computeSubmissionFeatures } from './assessment/submissions.js';
 import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './import/luogu.js';
+import { categoriesOfTags } from './knowledge/tagCategories.js';
 import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
 import { requestAnalysis, renderReport } from './agent/report.js';
 import { classifyCodes } from './agent/codeTags.js';
@@ -704,7 +705,7 @@ function renderLuoguSummary() {
 
   const algoMap = new Map();
   for (const pid of allPids) {
-    for (const tag of new Set(tagEntry(pid).categories)) {
+    for (const tag of categoriesOfTags(tagEntry(pid).tags)) {
       const entry = algoMap.get(tag) || { total: 0, solved: 0 };
       entry.total += 1;
       if (problemInfo.get(pid) && problemInfo.get(pid).solved) entry.solved += 1;
@@ -1085,7 +1086,7 @@ function computeAlgorithmStats() {
 
   const byTag = new Map();
   for (const [pid, info] of byProblem) {
-    const tags = usingCode ? codeTagsByProblem.get(pid) : tagEntry(pid).categories;
+    const tags = usingCode ? codeTagsByProblem.get(pid) : categoriesOfTags(tagEntry(pid).tags);
     if (!tags || tags.length === 0) continue;
     for (const tag of new Set(tags)) {
       if (!byTag.has(tag)) byTag.set(tag, { tag, problems: 0, solved: 0, attempts: 0 });

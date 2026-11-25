@@ -16,6 +16,7 @@ const OUT = path.join(root, '算法学习智能体-离线版.html');
 // 不用手工维护“谁必须在谁前面”——漏排一次就会白屏，交给代码算更稳。
 const MODULES = [
   'src/knowledge/graph.js',
+  'src/knowledge/tagCategories.js',
   'src/diagnosis/rules.js',
   'src/ui/mastery.js',
   'src/core/player.js',

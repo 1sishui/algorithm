@@ -921,6 +921,56 @@ function recommend(nodes = allNodes) {
 return { categories, allNodes, nodeById, categoryOfKp, recommend };
 })();
 
+/* ===== src/knowledge/tagCategories.js ===== */
+const __m_knowledge_tagCategories = (function () {
+/**
+ * 把洛谷的细标签归并成大类（用于算法分布图）
+ *
+ * 为什么不用洛谷自带的 parent：它的层级只到「树形数据结构」这种中间层，
+ * 而用户想看到的是「数据结构」这一层。所以这里维护一份关键词表，
+ * 按标签名匹配到 10 个大类，匹配不到的归入「其他」。
+ *
+ * 规则是有序的：先匹配到的优先，所以更具体的词要放在前面。
+ */
+const RULES = [
+  ['数据结构', ['并查集', '树状数组', '线段树', '平衡树', '堆', '栈', '队列', '哈希', '链表', 'LCT', 'K-D', '分块', '莫队', '树套树', '主席树', '可持久化', '单调栈', '单调队列', '笛卡尔树', '跳表']],
+  ['图论', ['最短路', '最小生成树', '拓扑', '强连通', '网络流', '二分图', '欧拉', '哈密顿', '割点', '割边', '桥', '图上', '差分约束', '2-SAT', '支配树', '圆方树', 'LCA', '树链剖分', '点分治', '基环树']],
+  ['动态规划', ['DP', 'dp', '背包', '线性动规', '区间动规', '状压', '树形动规', '数位', '插头', '轮廓线', '斜率优化', '决策单调']],
+  ['搜索', ['搜索', 'DFS', 'BFS', '剪枝', '迭代加深', 'A*', '双向']],
+  ['字符串', ['KMP', 'Trie', 'AC 自动机', 'AC自动机', '后缀', 'Manacher', '回文', 'Z 函数', '字符串哈希', '字符串']],
+  ['数学', ['数论', '组合', '概率', '期望', '博弈', '矩阵', '快速幂', 'FFT', 'NTT', '高斯', '同余', '质数', '素数', '欧拉函数', '莫比乌斯', '多项式', '微积分', '线性代数']],
+  ['树', ['树的', '二叉树', '树的遍历', '树的重心', '树的直径', '生成树']],
+  ['计算几何', ['几何', '凸包', '扫描线', '叉积', '半平面']],
+  ['基础算法', ['模拟', '枚举', '排序', '贪心', '二分', '三分', '前缀和', '差分', '双指针', '递归', '分治', '高精度', '递推', '构造', '打表', '离散化', '倍增']]
+];
+
+const FALLBACK = '其他';
+
+/** 单个标签 → 大类 */
+function categoryOfTag(name) {
+  const text = String(name || '').trim();
+  if (!text) return FALLBACK;
+
+  for (const [category, keywords] of RULES) {
+    for (const keyword of keywords) {
+      if (text.includes(keyword)) return category;
+    }
+  }
+  return FALLBACK;
+}
+
+/** 一组标签 → 去重后的大类列表 */
+function categoriesOfTags(tags) {
+  const result = [];
+  for (const tag of tags || []) {
+    const category = categoryOfTag(tag);
+    if (category && !result.includes(category)) result.push(category);
+  }
+  return result;
+}
+return { categoryOfTag, categoriesOfTags };
+})();
+
 /* ===== src/diagnosis/rules.js ===== */
 const __m_diagnosis_rules = (function () {
 /**
@@ -3772,6 +3822,7 @@ const { runUserCode, TEMPLATE } = __m_user_runner;
 const { computeFeatures } = __m_assessment_features;
 const { computeSubmissionFeatures } = __m_assessment_submissions;
 const { normalizeRecords, summarizeSubmissions, difficultyLabel } = __m_import_luogu;
+const { categoriesOfTags } = __m_knowledge_tagCategories;
 const { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } = __m_import_luoguClient;
 const { requestAnalysis, renderReport } = __m_agent_report;
 const { classifyCodes } = __m_agent_codeTags;
@@ -4447,7 +4498,7 @@ function renderLuoguSummary() {
 
   const algoMap = new Map();
   for (const pid of allPids) {
-    for (const tag of new Set(tagEntry(pid).categories)) {
+    for (const tag of categoriesOfTags(tagEntry(pid).tags)) {
       const entry = algoMap.get(tag) || { total: 0, solved: 0 };
       entry.total += 1;
       if (problemInfo.get(pid) && problemInfo.get(pid).solved) entry.solved += 1;
@@ -4828,7 +4879,7 @@ function computeAlgorithmStats() {
 
   const byTag = new Map();
   for (const [pid, info] of byProblem) {
-    const tags = usingCode ? codeTagsByProblem.get(pid) : tagEntry(pid).categories;
+    const tags = usingCode ? codeTagsByProblem.get(pid) : categoriesOfTags(tagEntry(pid).tags);
     if (!tags || tags.length === 0) continue;
     for (const tag of new Set(tags)) {
       if (!byTag.has(tag)) byTag.set(tag, { tag, problems: 0, solved: 0, attempts: 0 });
