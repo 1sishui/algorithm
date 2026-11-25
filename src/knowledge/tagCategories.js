@@ -112,7 +112,7 @@ export function categoriesOfTags(tags) {
  * 老版本抓取时把年份（2005）、比赛来源（NOIP 普及组、USACO）也存了进来，
  * 这些统一当噪音过滤掉，避免它们全落进「其他」。
  */
-const NOISE_PATTERN = /^(19|20)\d{2}$|NOIP|NOI|USACO|ICPC|CCPC|GESP|CSP|省选|联赛|杯|公开赛|月赛|组$|赛$|^[A-Z]{2,}$/;
+const NOISE_PATTERN = /^(19|20)\d{2}$|NOIP|NOI|USACO|ICPC|CCPC|GESP|CSP|省选|联赛|杯|公开赛|月赛|组$|赛$/;
 
 export function isNoiseTag(name) {
   const text = String(name || '')
