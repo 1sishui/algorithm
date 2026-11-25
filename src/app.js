@@ -93,7 +93,8 @@ const el = {
   autoAnalyze: $('auto-analyze'),
   analyzeBtn: $('btn-analyze'),
   analyzeStatus: $('analyze-status'),
-  analyzeBody: $('analyze-body')
+  analyzeBody: $('analyze-body'),
+  algoDetailBody: $('algo-detail-body')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -141,6 +142,7 @@ function refreshFeatures() {
     runs: runResult.sample,
     sessions: runResult.sessions
   };
+  renderAlgoDetail();
   const parts = [];
   if (subResult && subResult.sample) parts.push(`${subResult.sample} 条洛谷提交`);
   if (runResult.sample) parts.push(`${runResult.sample} 条运行记录`);
@@ -848,11 +850,12 @@ async function classifyCollectedCodes() {
       break;
     }
 
-    const byId = new Map(result.results.map((item) => [String(item.id), item.algorithms]));
+    const byId = new Map(result.results.map((item) => [String(item.id), item]));
     for (const record of batch) {
-      const tags = byId.get(String(record.id));
-      if (tags && tags.length) {
-        record.algoTags = tags;
+      const found = byId.get(String(record.id));
+      if (found && found.algorithms && found.algorithms.length) {
+        record.algoTags = found.algorithms;
+        record.algoReason = found.reason || '';
         tagged += 1;
       }
       done += 1;
@@ -870,6 +873,39 @@ async function classifyCollectedCodes() {
   if (autoAnalyze && tagged > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 }
 /** 按算法聚合：优先看“代码实际用的算法”，没有代码时才退回题目标签 */
+/** 展示“凭什么这么判断”：每道题用的算法 + 模型给的依据 */
+function renderAlgoDetail() {
+  if (!el.algoDetailBody) return;
+
+  const latest = new Map();
+  for (const record of submissions) {
+    if (Array.isArray(record.algoTags) && record.algoTags.length > 0) {
+      latest.set(record.pid, record);
+    }
+  }
+
+  if (latest.size === 0) {
+    el.algoDetailBody.innerHTML =
+      '<div class="algo-empty">还没有代码归类数据。点「抓取代码并分析修改」后会自动生成。</div>';
+    return;
+  }
+
+  const rows = [...latest.values()].slice(-20).reverse();
+  el.algoDetailBody.innerHTML =
+    `<div class="algo-empty">共 ${latest.size} 道题完成代码归类，显示最近 ${rows.length} 道</div>` +
+    rows
+      .map(
+        (record) => `
+        <div class="algo-item">
+          <span class="pid">${escapeText(record.pid || '')}</span>
+          ${record.title ? `<span class="tags">${escapeText(record.title)}</span>` : ''}
+          · <span class="tags">${escapeText(record.algoTags.join('、'))}</span>
+          ${record.algoReason ? `<span class="reason">依据：${escapeText(record.algoReason)}</span>` : ''}
+        </div>`
+      )
+      .join('');
+}
+
 function computeAlgorithmStats() {
   const byProblem = new Map();
   for (const record of submissions) {
