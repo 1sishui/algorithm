@@ -355,7 +355,10 @@ ANALYZE_PROMPT = """你是算法竞赛教练。用户给了一份基于真实做
 
 硬性要求：
 1. 不要在任何文字里出现分数、评分、百分比数字。
-2. strengths / weaknesses 必须点名具体算法或题型（例如动态规划、二分、图论、贪心），依据"algorithms"字段；
+2. strengths / weaknesses 必须点名具体算法或题型（例如动态规划、二分、图论、贪心），依据"algorithms"字段：
+   - algorithms.source 为 code：按用户代码实际使用了什么算法统计（优先采信）
+   - algorithms.source 为 problem：按题目标签统计，只能说明“这题可能考什么”
+   - algorithms.multiSolution：同一道题用过不同解法的题数，可作为思路灵活度的证据
    如果 algorithms 为空，就按难度层描述，并在 summary 里说明“尚未获取题目标签”。
 3. 只依据给出的数据，不要编造没有的信息；某个维度为 null 视为数据不足，不要据此下结论。
 4. 语气像教练，不说“多练习”这类废话。
@@ -439,3 +442,85 @@ def handle_analyze(payload, client_ip="local"):
         "result": result,
         "meta": {"model": model, "latency_ms": int((time.time() - started) * 1000), "cached": False},
     }
+
+CODE_TAG_PROMPT = """你在给算法竞赛选手的代码做归类。用户会给你若干段 C++ 代码，每段带一个 id。
+
+请判断每段代码“实际使用”的算法或数据结构（不是题目可能考什么，而是这段代码真正怎么写的）。
+
+只输出一个 JSON 对象：
+{"results":[{"id":"123","algorithms":["动态规划"],"reason":"用 dp 数组按容量转移"}]}
+
+规则：
+1. algorithms 只能从这个列表里选，1–3 个：模拟、枚举、排序、贪心、二分、前缀和、差分、双指针、递归、分治、搜索、DFS、BFS、动态规划、背包、图论、最短路、最小生成树、树、并查集、字符串、数学、栈、队列、堆、哈希、暴力。
+2. 依据代码本身：看循环结构、数组维度、递归调用、使用的容器。
+3. 拿不准时给最常见的一个，并在 reason 里说明“不确定”。
+4. 不要超过 3 个标签，不要编造。
+"""
+
+
+def handle_code_tags(payload, client_ip="local"):
+    """给一批代码打算法标签（按代码实际写法，不是题目分类）。"""
+    import hashlib
+
+    items = payload.get("items") or []
+    items = [it for it in items if isinstance(it, dict) and it.get("code")][:6]
+    if not items:
+        return 400, {"ok": False, "reason": "empty", "message": "没有可分析的代码"}
+
+    if rate_limited(client_ip):
+        return 429, {"ok": False, "reason": "rate_limited", "message": "调用太频繁"}
+
+    key = hashlib.sha256(
+        json.dumps([{"id": it.get("id"), "code": str(it.get("code"))[:2000]} for it in items], ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    cached = _cache.get(key)
+    if cached and time.time() - cached[0] < CACHE_TTL:
+        return 200, {"ok": True, "results": cached[1], "meta": {"cached": True}}
+
+    if setting("LLM_MOCK") == "1":
+        mock = [{"id": str(it.get("id")), "algorithms": ["模拟"], "reason": "模拟"} for it in items]
+        return 200, {"ok": True, "results": mock, "meta": {"model": "mock", "cached": False}}
+
+    if not setting("LLM_API_KEY"):
+        return 200, {"ok": False, "reason": "no_api_key", "message": "服务端还没有配置模型 key"}
+
+    blocks = []
+    for index, item in enumerate(items, 1):
+        code = str(item.get("code") or "")[:3000]
+        blocks.append(f"### 代码 {index}（id={item.get('id')}）\n```cpp\n{code}\n```")
+
+    messages = [
+        {"role": "system", "content": CODE_TAG_PROMPT},
+        {"role": "user", "content": "\n\n".join(blocks)},
+    ]
+
+    try:
+        content, model = call_model(messages)
+    except urllib.error.HTTPError as exc:
+        return 502, {"ok": False, "reason": "upstream_error", "message": f"模型接口返回 {exc.code}"}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"ok": False, "reason": "network_error", "message": str(exc)[:160]}
+
+    data = parse_model_output(content)
+    raw_results = (data or {}).get("results") if isinstance(data, dict) else None
+    if not isinstance(raw_results, list):
+        return 502, {"ok": False, "reason": "bad_output", "message": "模型返回格式不对"}
+
+    results = []
+    for entry in raw_results:
+        if not isinstance(entry, dict):
+            continue
+        algos = entry.get("algorithms")
+        if isinstance(algos, str):
+            algos = [algos]
+        if not isinstance(algos, list):
+            algos = []
+        cleaned = [str(a).strip()[:12] for a in algos if str(a).strip()][:3]
+        if cleaned:
+            results.append({"id": str(entry.get("id")), "algorithms": cleaned, "reason": str(entry.get("reason") or "")[:60]})
+
+    if not results:
+        return 502, {"ok": False, "reason": "bad_output", "message": "没能解析出算法标签"}
+
+    _cache[key] = (time.time(), results)
+    return 200, {"ok": True, "results": results, "meta": {"model": model, "cached": False}}

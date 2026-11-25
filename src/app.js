@@ -22,6 +22,7 @@ import { computeSubmissionFeatures } from './assessment/submissions.js';
 import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './import/luogu.js';
 import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
 import { requestAnalysis, renderReport } from './agent/report.js';
+import { classifyCodes } from './agent/codeTags.js';
 import {
   pushRecord,
   loadRecords,
@@ -763,6 +764,9 @@ el.fetchCode.addEventListener('click', async () => {
   refreshFeatures();
   setCookieStatus(`已抓取 ${ok} 段代码，六维已重新计算`, 'ok');
 
+  // 抓完代码顺手做算法归类（一题多解，看代码实际用了什么）
+  await classifyCollectedCodes();
+
   if (autoAnalyze && ok > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 });
 
@@ -818,7 +822,54 @@ el.fetchTags.addEventListener('click', async () => {
   if (autoAnalyze && ok > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 });
 
-/** 按算法标签聚合：哪些算法做得好、哪些总卡壳 */
+/**
+ * 把已抓到的代码分批交给模型打标签（每批 6 段，最多 5 批，控制成本）。
+ * 结果写在 record.algoTags 上，按“代码实际用的算法”统计强弱。
+ */
+async function classifyCollectedCodes() {
+  const pending = submissions.filter((r) => r.code && !(Array.isArray(r.algoTags) && r.algoTags.length));
+  if (pending.length === 0) {
+    setCookieStatus('代码算法标签已齐', 'ok');
+    return;
+  }
+
+  const batchSize = 6;
+  const maxBatches = 5;
+  const queue = pending.slice(0, batchSize * maxBatches);
+  let done = 0;
+  let tagged = 0;
+
+  for (let i = 0; i < queue.length; i += batchSize) {
+    const batch = queue.slice(i, i + batchSize);
+    const result = await classifyCodes(batch.map((r) => ({ id: r.id, code: r.code })));
+
+    if (!result.ok) {
+      setCookieStatus(`代码归类失败：${result.message || result.reason || '未知原因'}`, 'bad');
+      break;
+    }
+
+    const byId = new Map(result.results.map((item) => [String(item.id), item.algorithms]));
+    for (const record of batch) {
+      const tags = byId.get(String(record.id));
+      if (tags && tags.length) {
+        record.algoTags = tags;
+        tagged += 1;
+      }
+      done += 1;
+    }
+
+    saveSubmissions();
+    setCookieStatus(`代码归类 ${done}/${queue.length}，已标 ${tagged} 段`, 'muted');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  saveSubmissions();
+  refreshFeatures();
+  setCookieStatus(`已归类 ${tagged} 段代码的算法`, 'ok');
+
+  if (autoAnalyze && tagged > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
+}
+/** 按算法聚合：优先看“代码实际用的算法”，没有代码时才退回题目标签 */
 function computeAlgorithmStats() {
   const byProblem = new Map();
   for (const record of submissions) {
@@ -829,10 +880,29 @@ function computeAlgorithmStats() {
     if (record.accepted) item.solved = true;
   }
 
+  const codeTagged = submissions.filter((r) => Array.isArray(r.algoTags) && r.algoTags.length > 0);
+  const usingCode = codeTagged.length > 0;
+
+  // 每题取“最后一次提交”的算法标签；同时统计一题多解
+  const perProblem = new Map();
+  for (const record of codeTagged) {
+    if (!perProblem.has(record.pid)) perProblem.set(record.pid, []);
+    perProblem.get(record.pid).push(record.algoTags);
+  }
+
+  const codeTagsByProblem = new Map();
+  let multiSolution = 0;
+  for (const [pid, tagSets] of perProblem) {
+    codeTagsByProblem.set(pid, tagSets[tagSets.length - 1]);
+    const unique = new Set(tagSets.map((tags) => [...tags].sort().join('/')));
+    if (unique.size > 1) multiSolution += 1;
+  }
+
   const byTag = new Map();
   for (const [pid, info] of byProblem) {
-    const tags = pidTags[pid] || [];
-    for (const tag of tags) {
+    const tags = usingCode ? codeTagsByProblem.get(pid) : pidTags[pid];
+    if (!tags || tags.length === 0) continue;
+    for (const tag of new Set(tags)) {
       if (!byTag.has(tag)) byTag.set(tag, { tag, problems: 0, solved: 0, attempts: 0 });
       const entry = byTag.get(tag);
       entry.problems += 1;
@@ -853,29 +923,14 @@ function computeAlgorithmStats() {
   const strong = [...list].sort((a, b) => b.solveRate - a.solveRate || a.avgAttempts - b.avgAttempts).slice(0, 4);
   const weak = [...list].sort((a, b) => a.solveRate - b.solveRate || b.avgAttempts - a.avgAttempts).slice(0, 4);
 
-  return { strong, weak, taggedProblems: Object.keys(pidTags).length };
+  return {
+    source: usingCode ? 'code' : 'problem',
+    strong,
+    weak,
+    multiSolution,
+    taggedProblems: usingCode ? codeTagsByProblem.size : Object.keys(pidTags).length
+  };
 }
-el.syncLuoguBtn.addEventListener('click', () => syncLuoguNow({ full: false }));
-
-el.clearCookie.addEventListener('click', () => {
-  clientId = '';
-  luoguUid = '';
-  try {
-    localStorage.removeItem(CLIENT_ID_KEY);
-    localStorage.removeItem(UID_KEY);
-  } catch {
-    /* 忽略 */
-  }
-  el.cookieClientId.value = '';
-  el.cookieUid.value = '';
-  setCookieStatus('Cookie 已从本机删除（已导入的数据保留）', 'muted');
-});
-
-// 每 10 分钟静默同步一次第一页，页面在后台时跳过
-setInterval(() => {
-  if (!clientId || !luoguUid || document.visibilityState !== 'visible') return;
-  syncLuoguNow({ full: false, quiet: true });
-}, 10 * 60 * 1000);
 /* ---------------- 知识图谱侧边栏 ---------------- */
 
 function renderKnowledgeGraph() {

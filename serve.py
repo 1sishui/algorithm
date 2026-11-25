@@ -95,7 +95,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path not in ("/api/diagnose", "/api/analyze", "/api/luogu/records", "/api/luogu/record", "/api/luogu/problem"):
+        if path not in ("/api/diagnose", "/api/analyze", "/api/luogu/records", "/api/luogu/record", "/api/luogu/problem", "/api/code-tags"):
             self.send_error(404, "Not Found")
             return
 
@@ -121,6 +121,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 status, body = 500, {"ok": False, "reason": "proxy_error", "message": str(exc)[:200]}
             print(f"[analyze] {status} ok={body.get('ok')} reason={body.get('reason', '-')}", flush=True)
+            self._send_json(status, body)
+            return
+
+        if path == "/api/code-tags":
+            try:
+                status, body = llm_proxy.handle_code_tags(payload, client_ip=self.client_address[0])
+            except Exception as exc:  # noqa: BLE001
+                status, body = 500, {"ok": False, "reason": "proxy_error", "message": str(exc)[:200]}
+            print(f"[code-tags] {status} ok={body.get('ok')}", flush=True)
             self._send_json(status, body)
             return
 
