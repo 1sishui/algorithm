@@ -1040,39 +1040,103 @@ return { categories, allNodes, nodeById, categoryOfKp, recommend };
 /* ===== src/knowledge/tagCategories.js ===== */
 const __m_knowledge_tagCategories = (function () {
 /**
- * 把洛谷的细标签归并成大类（用于算法分布图）
+ * 洛谷标签 → 大类
  *
- * 为什么不用洛谷自带的 parent：它的层级只到「树形数据结构」这种中间层，
- * 而用户想看到的是「数据结构」这一层。所以这里维护一份关键词表，
- * 按标签名匹配到 10 个大类，匹配不到的归入「其他」。
+ * 洛谷有 262 个算法标签（type=2），很多标签之间没有父子关系，甚至「数学」「图论」
+ * 这种就是叶子标签。所以这里用关键词表做归并，规则有顺序：越具体的放越前面。
  *
- * 规则是有序的：先匹配到的优先，所以更具体的词要放在前面。
+ * 目标是把「其他」压到很小：新增标签没覆盖到时，界面会列出它们，方便后续补词。
  */
 const RULES = [
-  ['数据结构', ['并查集', '树状数组', '线段树', '平衡树', '堆', '栈', '队列', '哈希', '链表', 'LCT', 'K-D', '分块', '莫队', '树套树', '主席树', '可持久化', '单调栈', '单调队列', '笛卡尔树', '跳表']],
-  ['图论', ['最短路', '最小生成树', '拓扑', '强连通', '网络流', '二分图', '欧拉', '哈密顿', '割点', '割边', '桥', '图上', '差分约束', '2-SAT', '支配树', '圆方树', 'LCA', '树链剖分', '点分治', '基环树']],
-  ['动态规划', ['DP', 'dp', '背包', '线性动规', '区间动规', '状压', '树形动规', '数位', '插头', '轮廓线', '斜率优化', '决策单调']],
-  ['搜索', ['搜索', 'DFS', 'BFS', '剪枝', '迭代加深', 'A*', '双向']],
-  ['字符串', ['KMP', 'Trie', 'AC 自动机', 'AC自动机', '后缀', 'Manacher', '回文', 'Z 函数', '字符串哈希', '字符串']],
-  ['数学', ['数论', '组合', '概率', '期望', '博弈', '矩阵', '快速幂', 'FFT', 'NTT', '高斯', '同余', '质数', '素数', '欧拉函数', '莫比乌斯', '多项式', '微积分', '线性代数']],
-  ['树', ['树的', '二叉树', '树的遍历', '树的重心', '树的直径', '生成树']],
-  ['计算几何', ['几何', '凸包', '扫描线', '叉积', '半平面']],
-  ['基础算法', ['模拟', '枚举', '排序', '贪心', '二分', '三分', '前缀和', '差分', '双指针', '递归', '分治', '高精度', '递推', '构造', '打表', '离散化', '倍增']]
+  [
+    '数据结构',
+    [
+      '并查集', '树状数组', '哈希', '分散层叠', '线段树', '平衡树', '堆', '栈', '队列', '哈希表', '散列', '链表',
+      'LCT', 'K-D', 'KD', '分块', '莫队', '树套树', '主席树', '可持久化', '单调栈', '单调队列',
+      '笛卡尔树', '跳表', 'ST 表', 'bitset', '二叉堆', '左偏树', '珂朵莉', '颜色段均摊',
+      'Dancing Links', 'DLX', 'KTT', '启发式合并', '数据结构', 'STL', '稀疏表', '李超树'
+    ]
+  ],
+  [
+    '图论',
+    [
+      '最短路', '最小生成树', '拓扑', '强连通', '网络流', '二分图', '欧拉', '哈密顿', '割点',
+      '割边', '桥', '图上', '差分约束', '2-SAT', '支配树', '圆方树', 'LCA', '树链剖分', '点分治',
+      '基环树', '图论', '图遍历', '最小环', '负权环', '连通块', 'Tarjan', '双连通', '仙人掌',
+      '最大匹配', '最小割', '最大流', '费用流', '平面图', 'Kruskal', '重构树', 'Hall 定理',
+      'LGV', '广义串并联', '弦图', 'Prüfer', 'Dilworth', 'Floyd'
+    ]
+  ],
+  [
+    '动态规划',
+    [
+      'DP', 'dp', '背包', '线性动规', '区间动规', '状压', '树形动规', '数位', '插头', '轮廓线',
+      '斜率优化', '决策单调', '四边形不等式', 'slope trick', '斜率维护', '状态合并', '整体转移',
+      '保序回归', '动态规划'
+    ]
+  ],
+  [
+    '搜索',
+    [
+      '搜索', 'DFS', 'BFS', '剪枝', '迭代加深', 'A*', '双向', '爬山', '模拟退火', '随机调整',
+      '遗传算法', '启发式搜索'
+    ]
+  ],
+  [
+    '字符串',
+    ['KMP', 'Trie', 'AC 自动机', 'AC自动机', '后缀', 'Manacher', '回文', 'Z 函数', '字符串哈希', '字符串', 'Lyndon', '有限状态自动机']
+  ],
+  [
+    '数学',
+    [
+      '数论', '组合', '概率', '期望', '博弈', '矩阵', '快速幂', 'FFT', 'NTT', 'FWT', '沃尔什',
+      '高斯', '同余', '质数', '素数', '欧拉函数', '莫比乌斯', '多项式', '微积分', '线性代数',
+      '数学', 'gcd', '最大公约数', '扩展欧几里德', '不定方程', '进制', '群论', '置换', 'Pólya',
+      '中国剩余', 'CRT', '二项式', '康托', '鸽笼', '容斥', 'Fibonacci', 'Catalan', 'Stirling',
+      '生成函数', '线性规划', '逆元', '线性基', '导数', '积分', '级数', '向量', 'Lucas',
+      '二次剩余', '行列式', 'Bézout', '鞅', '随机游走', '特征值', '整数规划', '原始对偶',
+      '单位根反演', '拉格朗日', '杜教筛', 'BSGS', '大步小步', '卷积', '调和级数', '亚线性',
+      'Nim', 'SG 函数', '杨表', '类欧几里得', 'Berlekamp', 'BM 算法', 'Stern-Brocot', '拟阵',
+      '信息论', '牛顿迭代', '原根', '分数规划', '梯度下降', '线性筛'
+    ]
+  ],
+  [
+    '树',
+    ['树的', '二叉树', '树论', '虚树', '霍夫曼树', '树的重心', '树的直径', '树的遍历', '生成树']
+  ],
+  [
+    '计算几何',
+    ['几何', '凸包', '扫描线', '叉积', '半平面', '线段相交', '旋转卡壳', '闵可夫斯基和']
+  ],
+  [
+    '基础算法',
+    [
+      '模拟', '枚举', '排序', '贪心', '二分', '三分', '前缀和', '差分', '双指针', '递归', '分治',
+      '高精度', '递推', '构造', '打表', '离散化', '倍增', '语言入门', '顺序结构', '分支结构',
+      '循环结构', '数组', '结构体', '位运算', '分类讨论', '离线处理', '均摊分析', '随机化',
+      'Ad-hoc', '近似算法', '其它技巧', '基础算法'
+    ]
+  ]
 ];
 
-const FALLBACK = '其他';
+const CATEGORY_NAMES = RULES.map(([category]) => category);
 
 /** 单个标签 → 大类 */
 function categoryOfTag(name) {
-  const text = String(name || '').trim();
-  if (!text) return FALLBACK;
+  const text = String(name || '')
+    .replace(/\ufeff/g, '')
+    .trim();
+  if (!text) return '其他';
+
+  // 标签名本身就等于大类（如「数学」「图论」）
+  if (CATEGORY_NAMES.includes(text)) return text;
 
   for (const [category, keywords] of RULES) {
     for (const keyword of keywords) {
       if (text.includes(keyword)) return category;
     }
   }
-  return FALLBACK;
+  return '其他';
 }
 
 /** 一组标签 → 去重后的大类列表 */
@@ -4142,7 +4206,7 @@ const { runUserCode, TEMPLATE } = __m_user_runner;
 const { computeFeatures } = __m_assessment_features;
 const { computeSubmissionFeatures } = __m_assessment_submissions;
 const { normalizeRecords, summarizeSubmissions, difficultyLabel } = __m_import_luogu;
-const { categoriesOfTags } = __m_knowledge_tagCategories;
+const { categoriesOfTags, categoryOfTag } = __m_knowledge_tagCategories;
 const { buildCategoryStats, renderVerdict } = __m_ui_verdict;
 const { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } = __m_import_luoguClient;
 const { requestAnalysis, renderReport } = __m_agent_report;
@@ -4820,14 +4884,32 @@ function renderLuoguSummary() {
   const allPids = [...problemInfo.keys()];
 
   const algoMap = new Map();
+  const otherTags = new Map();
+
   for (const pid of allPids) {
-    for (const tag of categoriesOfTags(tagEntry(pid).tags)) {
-      const entry = algoMap.get(tag) || { total: 0, solved: 0 };
+    const seen = new Set();
+    for (const rawTag of tagEntry(pid).tags) {
+      const category = categoryOfTag(rawTag);
+      if (category === '其他') {
+        otherTags.set(rawTag, (otherTags.get(rawTag) || 0) + 1);
+      }
+      if (seen.has(category)) continue;
+      seen.add(category);
+
+      const entry = algoMap.get(category) || { total: 0, solved: 0 };
       entry.total += 1;
       if (problemInfo.get(pid) && problemInfo.get(pid).solved) entry.solved += 1;
-      algoMap.set(tag, entry);
+      algoMap.set(category, entry);
     }
   }
+
+  const otherHint = otherTags.size
+    ? `<div class="algo-empty">「其他」包含：${[...otherTags.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([tag, count]) => `${escapeText(tag)}×${count}`)
+        .join('、')}（这些标签还没归类，可以把它们发我补进来）</div>`
+    : '';
 
   const taggedCount = allPids.filter((pid) => tagEntry(pid).tags.length > 0).length;
   const algoList = [...algoMap.entries()]
@@ -4884,12 +4966,12 @@ function renderLuoguSummary() {
       <div class="chart-panel ${chartMode === 'tag' ? 'active' : ''}" data-panel="tag">
         ${
           algoBars
-            ? `<div class="luogu-subtitle">算法分布 · 合计 ${taggedCount} 道</div><div class="diff-chart">${algoBars}</div>`
+            ? `<div class="luogu-subtitle">算法分布 · 合计 ${taggedCount} 道</div><div class="diff-chart">${algoBars}</div>${otherHint}`
             : `<div class="algo-empty">${
                 taggedCount === 0
                   ? '还没有题目标签，点「同步做题情况」会自动抓取。'
                   : '已抓取的题目里都没有算法标签（多为未评定题目）。'
-              }</div>`
+              }${otherHint}</div>`
         }
       </div>
     </div>`;

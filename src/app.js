@@ -20,7 +20,7 @@ import { runUserCode, TEMPLATE } from './user/runner.js';
 import { computeFeatures } from './assessment/features.js';
 import { computeSubmissionFeatures } from './assessment/submissions.js';
 import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './import/luogu.js';
-import { categoriesOfTags } from './knowledge/tagCategories.js';
+import { categoriesOfTags, categoryOfTag } from './knowledge/tagCategories.js';
 import { buildCategoryStats, renderVerdict } from './ui/verdict.js';
 import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
 import { requestAnalysis, renderReport } from './agent/report.js';
@@ -707,14 +707,32 @@ function renderLuoguSummary() {
   const allPids = [...problemInfo.keys()];
 
   const algoMap = new Map();
+  const otherTags = new Map();
+
   for (const pid of allPids) {
-    for (const tag of categoriesOfTags(tagEntry(pid).tags)) {
-      const entry = algoMap.get(tag) || { total: 0, solved: 0 };
+    const seen = new Set();
+    for (const rawTag of tagEntry(pid).tags) {
+      const category = categoryOfTag(rawTag);
+      if (category === '其他') {
+        otherTags.set(rawTag, (otherTags.get(rawTag) || 0) + 1);
+      }
+      if (seen.has(category)) continue;
+      seen.add(category);
+
+      const entry = algoMap.get(category) || { total: 0, solved: 0 };
       entry.total += 1;
       if (problemInfo.get(pid) && problemInfo.get(pid).solved) entry.solved += 1;
-      algoMap.set(tag, entry);
+      algoMap.set(category, entry);
     }
   }
+
+  const otherHint = otherTags.size
+    ? `<div class="algo-empty">「其他」包含：${[...otherTags.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([tag, count]) => `${escapeText(tag)}×${count}`)
+        .join('、')}（这些标签还没归类，可以把它们发我补进来）</div>`
+    : '';
 
   const taggedCount = allPids.filter((pid) => tagEntry(pid).tags.length > 0).length;
   const algoList = [...algoMap.entries()]
@@ -771,12 +789,12 @@ function renderLuoguSummary() {
       <div class="chart-panel ${chartMode === 'tag' ? 'active' : ''}" data-panel="tag">
         ${
           algoBars
-            ? `<div class="luogu-subtitle">算法分布 · 合计 ${taggedCount} 道</div><div class="diff-chart">${algoBars}</div>`
+            ? `<div class="luogu-subtitle">算法分布 · 合计 ${taggedCount} 道</div><div class="diff-chart">${algoBars}</div>${otherHint}`
             : `<div class="algo-empty">${
                 taggedCount === 0
                   ? '还没有题目标签，点「同步做题情况」会自动抓取。'
                   : '已抓取的题目里都没有算法标签（多为未评定题目）。'
-              }</div>`
+              }${otherHint}</div>`
         }
       </div>
     </div>`;
