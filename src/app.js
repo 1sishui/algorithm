@@ -137,7 +137,8 @@ function refreshFeatures() {
     submissions: subResult ? subResult.sample : 0,
     problems: subResult ? subResult.problems : 0,
     runs: runResult.sample,
-    sessions: runResult.sessions
+    sessions: runResult.sessions,
+    solved: subResult && subResult.dims ? null : null
   };
   renderAlgoDetail();
   const parts = [];
@@ -652,15 +653,15 @@ function renderLuoguSummary() {
       </div>`);
   }
 
-  // 算法分布：按题目标签统计题目数
+  // 算法分布：只统计「通过了的题」，按题目标签归并
+  const solvedPids = [...new Set(submissions.filter((r) => r.accepted).map((r) => r.pid).filter(Boolean))];
   const algoCount = new Map();
-  for (const [pid] of new Map(submissions.map((r) => [r.pid, true]))) {
+  for (const pid of solvedPids) {
     for (const tag of new Set(pidTags[pid] || [])) {
       algoCount.set(tag, (algoCount.get(tag) || 0) + 1);
     }
   }
-  const uniquePids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
-  const taggedCount = uniquePids.filter((pid) => (pidTags[pid] || []).length > 0).length;
+  const taggedCount = solvedPids.filter((pid) => (pidTags[pid] || []).length > 0).length;
   const algoList = [...algoCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
   const algoMax = Math.max(...algoList.map(([, n]) => n), 1);
   const algoRows = algoList.map(
@@ -678,7 +679,7 @@ function renderLuoguSummary() {
       <span>题目 <b>${stats.problems}</b></span>
       <span>通过 <b>${stats.solved}</b></span>
       <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
-      <span>标签覆盖 <b>${taggedCount}/${stats.problems}</b></span>
+      <span>已通过题目标签 <b>${taggedCount}/${stats.solved}</b></span>
     </div>
     <div class="diff-bars">${diffRows.join('')}</div>
     ${
@@ -710,9 +711,9 @@ async function syncPages(form) {
   return { ok: result.ok, error: result.error, added: normalized.length };
 }
 
-/** 抓题目标签（用于按算法分类）。不再设上限，失败会重试一次 */
+/** 抓题目标签：只抓「通过了的题」，没做出来的题标签说明不了他会什么 */
 async function syncTags(form) {
-  const pids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
+  const pids = [...new Set(submissions.filter((r) => r.accepted).map((r) => r.pid).filter(Boolean))];
   // 没抓过（undefined）的才需要抓；抓过但确实没标签（[]）不重复打扰洛谷
   const need = pids.filter((pid) => pidTags[pid] === undefined);
   if (need.length === 0) {
@@ -778,8 +779,8 @@ async function syncDoing() {
 
     const stats = summarizeSubmissions(submissions);
     setCookieStatus(
-      `已同步 ${records.added} 条提交，共 ${stats.problems} 道题；` +
-        `标签覆盖 ${tags.tagged}/${tags.total} 道` +
+      `已同步 ${records.added} 条提交，共 ${stats.problems} 道题（通过 ${stats.solved} 道）；` +
+        `已通过题的标签覆盖 ${tags.tagged}/${tags.total} 道` +
         (tags.failed ? `，${tags.failed} 道抓取失败（可再点一次重试）` : ''),
       tags.failed ? 'bad' : 'ok'
     );
@@ -978,8 +979,14 @@ function computeAlgorithmStats() {
       avgAttempts: Number((entry.attempts / entry.problems).toFixed(1))
     }));
 
-  const strong = [...list].sort((a, b) => b.solveRate - a.solveRate || a.avgAttempts - b.avgAttempts).slice(0, 4);
-  const weak = [...list].sort((a, b) => a.solveRate - b.solveRate || b.avgAttempts - a.avgAttempts).slice(0, 4);
+  // 题目标签口径下统计的都是「已通过」的题，通过率恒为 100%，
+  // 所以强弱改看「做了几道」和「平均提交几次」。
+  const strong = usingCode
+    ? [...list].sort((a, b) => b.solveRate - a.solveRate || a.avgAttempts - b.avgAttempts).slice(0, 4)
+    : [...list].sort((a, b) => b.problems - a.problems || a.avgAttempts - b.avgAttempts).slice(0, 4);
+  const weak = usingCode
+    ? [...list].sort((a, b) => a.solveRate - b.solveRate || b.avgAttempts - a.avgAttempts).slice(0, 4)
+    : [...list].sort((a, b) => b.avgAttempts - a.avgAttempts || a.problems - b.problems).slice(0, 4);
 
   return {
     source: usingCode ? 'code' : 'problem',
