@@ -659,6 +659,8 @@ function renderLuoguSummary() {
       algoCount.set(tag, (algoCount.get(tag) || 0) + 1);
     }
   }
+  const uniquePids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
+  const taggedCount = uniquePids.filter((pid) => (pidTags[pid] || []).length > 0).length;
   const algoList = [...algoCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
   const algoMax = Math.max(...algoList.map(([, n]) => n), 1);
   const algoRows = algoList.map(
@@ -676,12 +678,17 @@ function renderLuoguSummary() {
       <span>题目 <b>${stats.problems}</b></span>
       <span>通过 <b>${stats.solved}</b></span>
       <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
+      <span>标签覆盖 <b>${taggedCount}/${stats.problems}</b></span>
     </div>
     <div class="diff-bars">${diffRows.join('')}</div>
     ${
       algoRows.length
         ? `<div class="luogu-subtitle">算法分布（按题目）</div><div class="diff-bars">${algoRows.join('')}</div>`
-        : '<div class="algo-empty">还没有题目标签，点「同步做题情况」会自动抓取。</div>'
+        : `<div class="algo-empty">${
+            taggedCount === 0
+              ? '还没有题目标签，点「同步做题情况」会自动抓取。'
+              : '已抓取的题目里都没有算法标签（多为未评定题目）。'
+          }</div>`
     }`;
 }
 
@@ -703,29 +710,52 @@ async function syncPages(form) {
   return { ok: result.ok, error: result.error, added: normalized.length };
 }
 
-/** 抓题目标签（用于按算法分类） */
-async function syncTags(form, limit = 120) {
+/** 抓题目标签（用于按算法分类）。不再设上限，失败会重试一次 */
+async function syncTags(form) {
   const pids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
-  const need = pids.filter((pid) => !pidTags[pid]).slice(0, limit);
-  if (need.length === 0) return { ok: true, added: 0 };
+  // 没抓过（undefined）的才需要抓；抓过但确实没标签（[]）不重复打扰洛谷
+  const need = pids.filter((pid) => pidTags[pid] === undefined);
+  if (need.length === 0) {
+    return { ok: true, added: 0, failed: 0, total: pids.length, tagged: pids.filter((p) => (pidTags[p] || []).length).length };
+  }
 
   let done = 0;
   let ok = 0;
-  for (const pid of need) {
+  const failed = [];
+
+  const grab = async (pid) => {
     const result = await fetchProblemTags(pid, form.cookie);
     if (result && result.ok) {
       pidTags[pid] = result.tags || [];
-      ok += 1;
+      return true;
     }
+    return false;
+  };
+
+  for (const pid of need) {
+    if (await grab(pid)) ok += 1;
+    else failed.push(pid);
     done += 1;
     if (done % 5 === 0 || done === need.length) {
-      setCookieStatus(`抓取题目标签 ${done}/${need.length}`, 'muted');
+      setCookieStatus(`抓取题目标签 ${done}/${need.length}，失败 ${failed.length}`, 'muted');
     }
     await new Promise((resolve) => setTimeout(resolve, 160));
   }
 
+  // 失败的重试一轮（多为瞬时限流）
+  if (failed.length > 0) {
+    const retry = [...failed];
+    failed.length = 0;
+    for (const pid of retry) {
+      if (await grab(pid)) ok += 1;
+      else failed.push(pid);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+
   savePidTags();
-  return { ok: true, added: ok };
+  const tagged = pids.filter((p) => (pidTags[p] || []).length > 0).length;
+  return { ok: true, added: ok, failed: failed.length, total: pids.length, tagged };
 }
 
 /** 动作一：同步做题情况（只统计，不调用模型） */
@@ -748,8 +778,10 @@ async function syncDoing() {
 
     const stats = summarizeSubmissions(submissions);
     setCookieStatus(
-      `已同步 ${records.added} 条提交，共 ${stats.problems} 道题；抓到 ${tags.added} 道题的标签`,
-      'ok'
+      `已同步 ${records.added} 条提交，共 ${stats.problems} 道题；` +
+        `标签覆盖 ${tags.tagged}/${tags.total} 道` +
+        (tags.failed ? `，${tags.failed} 道抓取失败（可再点一次重试）` : ''),
+      tags.failed ? 'bad' : 'ok'
     );
   } finally {
     el.syncDoingBtn.disabled = false;
