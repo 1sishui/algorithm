@@ -20,7 +20,7 @@ import { runUserCode, TEMPLATE } from './user/runner.js';
 import { computeFeatures } from './assessment/features.js';
 import { computeSubmissionFeatures } from './assessment/submissions.js';
 import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './import/luogu.js';
-import { syncLuoguWithCookie, fetchRecordCode } from './import/luoguClient.js';
+import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
 import { requestAnalysis, renderReport } from './agent/report.js';
 import {
   pushRecord,
@@ -87,6 +87,7 @@ const el = {
   syncLuoguBtn: $('btn-sync-luogu'),
   clearCookie: $('btn-clear-cookie'),
   fetchCode: $('btn-fetch-code'),
+  fetchTags: $('btn-fetch-tags'),
   cookieStatus: $('cookie-status'),
   autoAnalyze: $('auto-analyze'),
   analyzeBtn: $('btn-analyze'),
@@ -511,7 +512,8 @@ async function runAnalysis({ quiet = false } = {}) {
   if (!quiet) setAnalyzeStatus('模型分析中…', 'muted');
   el.analyzeBtn.disabled = true;
 
-  const response = await requestAnalysis(dims, lastStats || {});
+  const algorithms = computeAlgorithmStats();
+  const response = await requestAnalysis(dims, lastStats || {}, algorithms);
 
   analyzing = false;
   el.analyzeBtn.disabled = false;
@@ -763,6 +765,96 @@ el.fetchCode.addEventListener('click', async () => {
 
   if (autoAnalyze && ok > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 });
+
+/* ---------------- 题目标签（决定“强势/弱势算法”） ---------------- */
+
+const PID_TAGS_KEY = 'algo-agent:pid-tags';
+let pidTags = {};
+try {
+  pidTags = JSON.parse(localStorage.getItem(PID_TAGS_KEY) || '{}') || {};
+} catch {
+  pidTags = {};
+}
+
+function savePidTags() {
+  try {
+    localStorage.setItem(PID_TAGS_KEY, JSON.stringify(pidTags));
+  } catch {
+    /* 忽略 */
+  }
+}
+
+el.fetchTags.addEventListener('click', async () => {
+  const form = readCookieForm();
+  if (form.error) {
+    setCookieStatus(form.error, 'bad');
+    return;
+  }
+
+  const pids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
+  const need = pids.filter((pid) => !pidTags[pid]).slice(-80);
+  if (need.length === 0) {
+    setCookieStatus('题目标签已经抓全了', 'ok');
+    return;
+  }
+
+  let done = 0;
+  let ok = 0;
+  for (const pid of need) {
+    const result = await fetchProblemTags(pid, form.cookie);
+    if (result && result.ok) {
+      pidTags[pid] = result.tags || [];
+      ok += 1;
+    }
+    done += 1;
+    if (done % 5 === 0 || done === need.length) {
+      setCookieStatus(`抓取题目标签 ${done}/${need.length}，成功 ${ok}（慢是正常的）`, 'muted');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 180));
+  }
+
+  savePidTags();
+  setCookieStatus(`已抓取 ${ok} 道题的标签`, 'ok');
+  if (autoAnalyze && ok > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
+});
+
+/** 按算法标签聚合：哪些算法做得好、哪些总卡壳 */
+function computeAlgorithmStats() {
+  const byProblem = new Map();
+  for (const record of submissions) {
+    if (!record.pid) continue;
+    if (!byProblem.has(record.pid)) byProblem.set(record.pid, { attempts: 0, solved: false });
+    const item = byProblem.get(record.pid);
+    item.attempts += 1;
+    if (record.accepted) item.solved = true;
+  }
+
+  const byTag = new Map();
+  for (const [pid, info] of byProblem) {
+    const tags = pidTags[pid] || [];
+    for (const tag of tags) {
+      if (!byTag.has(tag)) byTag.set(tag, { tag, problems: 0, solved: 0, attempts: 0 });
+      const entry = byTag.get(tag);
+      entry.problems += 1;
+      entry.attempts += info.attempts;
+      if (info.solved) entry.solved += 1;
+    }
+  }
+
+  const list = [...byTag.values()]
+    .filter((entry) => entry.problems >= 2)
+    .map((entry) => ({
+      tag: entry.tag,
+      problems: entry.problems,
+      solveRate: Math.round((entry.solved / entry.problems) * 100),
+      avgAttempts: Number((entry.attempts / entry.problems).toFixed(1))
+    }));
+
+  const strong = [...list].sort((a, b) => b.solveRate - a.solveRate || a.avgAttempts - b.avgAttempts).slice(0, 4);
+  const weak = [...list].sort((a, b) => a.solveRate - b.solveRate || b.avgAttempts - a.avgAttempts).slice(0, 4);
+
+  return { strong, weak, taggedProblems: Object.keys(pidTags).length };
+}
 el.syncLuoguBtn.addEventListener('click', () => syncLuoguNow({ full: false }));
 
 el.clearCookie.addEventListener('click', () => {

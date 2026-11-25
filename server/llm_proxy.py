@@ -342,21 +342,23 @@ def handle(payload, client_ip="local"):
         "meta": {"model": model, "latency_ms": int((time.time() - started) * 1000), "cached": False},
     }
 
-ANALYZE_PROMPT = """你是算法学习分析师。用户给了你一份基于真实刷题/练习记录算出的六维评分和统计。
+ANALYZE_PROMPT = """你是算法竞赛教练。用户给了一份基于真实做题记录算出的行为数据（含六维分值，但对外不要提分数）。
 
 请写一份诊断，只输出一个 JSON 对象，不要 Markdown、不要多余文字：
 {
-  "summary": "两句话概括当前水平与主要问题，必须引用具体数字",
-  "strengths": ["最多 3 条，每条不超过 30 字，必须对应某个维度的数字"],
-  "weaknesses": ["最多 3 条，每条不超过 30 字，指出具体短板和可能原因"],
-  "suggestions": ["最多 3 条，每条不超过 30 字，要具体可执行，例如练哪个难度区间的题"],
-  "correctionProfile": "一句话描述他的纠错风格（小步调试 / 频繁重写 / 一次通过等），没有代码数据就写“证据不足”"
+  "summary": "两句话：整体水平如何、最该补的方向。不要出现任何分数或百分比。",
+  "strengths": ["强势的算法/题型，最多 3 条，每条不超过 30 字"],
+  "weaknesses": ["弱势的算法/题型，最多 3 条，每条不超过 30 字"],
+  "suggestions": ["最多 3 条，每条不超过 30 字，要具体：练哪类算法、什么难度、什么节奏"],
+  "correctionProfile": "一句话描述纠错风格（小步调试 / 频繁重写 / 一次通过等），证据不足就写“证据不足”"
 }
 
-要求：
-1. 只依据给出的数字，不要编造没有的数据。
-2. 分数为 null 的维度视为“数据不足”，不要据此下结论。
-3. 语气像教练，不说空话，不给“多练习”这种废话。
+硬性要求：
+1. 不要在任何文字里出现分数、评分、百分比数字。
+2. strengths / weaknesses 必须点名具体算法或题型（例如动态规划、二分、图论、贪心），依据"algorithms"字段；
+   如果 algorithms 为空，就按难度层描述，并在 summary 里说明“尚未获取题目标签”。
+3. 只依据给出的数据，不要编造没有的信息；某个维度为 null 视为数据不足，不要据此下结论。
+4. 语气像教练，不说“多练习”这类废话。
 """
 
 
@@ -377,10 +379,10 @@ def handle_analyze(payload, client_ip="local"):
         return 200, {
             "ok": True,
             "result": {
-                "summary": "（模拟）六维中错误修正 68 分、覆盖均衡 54 分，说明能改对但练得偏窄。",
-                "strengths": ["错误修正 68：出错后多数能自己改对"],
-                "weaknesses": ["覆盖均衡 54：集中在两三个难度层"],
-                "suggestions": ["每周挑 2 道提高+ 的题，逼自己跨难度"],
+                "summary": "（模拟）基础题稳定，但提高档明显吃力，动态规划是主要短板。",
+                "strengths": ["贪心：通过率高，基本一次过"],
+                "weaknesses": ["动态规划：反复提交仍做不出", "图论：练得少、错误集中"],
+                "suggestions": ["先刷 10 道线性 DP，再上区间 DP", "每周两道提高+ 的图论题"],
                 "correctionProfile": "以小步调试为主，偶尔整段重写"
             },
             "meta": {"model": "mock", "latency_ms": 0, "cached": False},
@@ -394,7 +396,10 @@ def handle_analyze(payload, client_ip="local"):
     if not setting("LLM_API_KEY"):
         return 200, {"ok": False, "reason": "no_api_key", "message": "服务端还没有配置模型 key"}
 
-    user_text = json.dumps({"dims": dims, "stats": stats}, ensure_ascii=False)[:4000]
+    user_text = json.dumps(
+        {"dims": dims, "stats": stats, "algorithms": payload.get("algorithms") or {}},
+        ensure_ascii=False,
+    )[:4000]
     messages = [
         {"role": "system", "content": ANALYZE_PROMPT},
         {"role": "user", "content": user_text},

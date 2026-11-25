@@ -12,10 +12,12 @@
   3. 全程不落盘、不打印 Cookie。
 """
 import http.cookiejar
+import time
 import json
 import re
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -280,4 +282,71 @@ def fetch_record_code(record_id, cookie="", timeout=15):
         "language": record.get("language") or "",
         "status": record.get("status"),
         "time": record.get("time"),
+    }
+
+_TAG_CACHE = {"map": {}, "at": 0}
+
+
+def _tag_map():
+    """洛谷的标签字典：/​_lfe/tags → {id: 名称}，缓存一天。"""
+    global _TAG_CACHE
+    if _TAG_CACHE["map"] and time.time() - _TAG_CACHE["at"] < 86400:
+        return _TAG_CACHE["map"]
+
+    try:
+        _status, text, _ctype, _final = _get(
+            f"{LUOGU_BASE}/_lfe/tags", accept="application/json", ajax=False
+        )
+        data = json.loads(text)
+        mapping = {}
+        for tag in data.get("tags", []):
+            if isinstance(tag, dict) and tag.get("id") is not None:
+                mapping[int(tag["id"])] = str(tag.get("name") or "")
+        _TAG_CACHE = {"map": mapping, "at": time.time()}
+        return mapping
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def fetch_problem_tags(pid, cookie="", timeout=15):
+    """取题目的算法标签（如 动态规划、二分），用于判断“强势/弱势算法”。"""
+    pid = str(pid or "").strip()
+    if not pid or not re.match(r"^[A-Za-z0-9_]+$", pid):
+        return 400, {"ok": False, "reason": "bad_pid", "message": "题号不合法"}
+
+    url = f"{LUOGU_BASE}/problem/{urllib.parse.quote(pid)}"
+    try:
+        _status, text, _ctype, _final = _get(url, cookie=cookie, accept="text/html", ajax=False, timeout=timeout)
+    except PermissionError:
+        return 200, {"ok": False, "reason": "forbidden", "message": "看不到这道题"}
+    except Exception as exc:  # noqa: BLE001
+        return 200, {"ok": False, "reason": "network", "message": f"请求失败：{exc}"}
+
+    data = _parse_payload(text)
+    if not data:
+        return 200, {"ok": False, "reason": "no_data", "message": "页面里没有解析出题目信息"}
+
+    problem = (data.get("currentData") or {}).get("problem") or data.get("problem") or {}
+    raw_tags = problem.get("tags") or []
+    names = _tag_map()
+
+    resolved = []
+    for tag in raw_tags:
+        if isinstance(tag, dict):
+            name = tag.get("name") or ""
+        else:
+            try:
+                name = names.get(int(tag), "")
+            except (TypeError, ValueError):
+                name = ""
+        name = str(name).strip()
+        if name and name not in resolved:
+            resolved.append(name)
+
+    return 200, {
+        "ok": True,
+        "pid": pid,
+        "title": problem.get("name") or problem.get("title") or "",
+        "difficulty": problem.get("difficulty"),
+        "tags": resolved[:8],
     }

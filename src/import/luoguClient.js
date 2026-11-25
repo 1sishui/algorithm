@@ -88,3 +88,19 @@ export async function fetchRecordCode(id, cookie) {
     return { ok: false, message: '连不上本地服务' };
   }
 }
+/** 取题目的算法标签（公开页面即可，带上 Cookie 更稳） */
+export async function fetchProblemTags(pid, cookie) {
+  try {
+    const response = await fetch('/api/luogu/problem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid, cookie })
+    });
+    if (response.status === 404 || response.status === 501) {
+      return { ok: false, message: '当前服务是旧版本，请重启 启动.bat' };
+    }
+    return await response.json();
+  } catch {
+    return { ok: false, message: '连不上本地服务' };
+  }
+}

@@ -12,7 +12,7 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
-export async function requestAnalysis(dims, stats) {
+export async function requestAnalysis(dims, stats, algorithms) {
   if (typeof location !== 'undefined' && location.protocol === 'file:') {
     return { ok: false, reason: 'offline_file' };
   }
@@ -24,7 +24,7 @@ export async function requestAnalysis(dims, stats) {
     const response = await fetch(ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dims, stats }),
+      body: JSON.stringify({ dims, stats, algorithms: algorithms || {} }),
       signal: controller.signal
     });
 
