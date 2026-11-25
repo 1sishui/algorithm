@@ -653,29 +653,44 @@ function renderLuoguSummary() {
   }
 
   const stats = summarizeSubmissions(submissions);
-  const max = Math.max(...stats.histogram, 1);
 
-  const diffRows = [];
-  for (let level = 0; level <= 7; level += 1) {
-    const count = stats.histogram[level] || 0;
-    if (count === 0) continue;
-    diffRows.push(`
-      <div class="diff-row">
-        <span class="lvl">${difficultyLabel(level)}</span>
-        <span class="track"><span class="fill" style="width:${Math.round((count / max) * 100)}%"></span></span>
-        <span class="cnt">${count}</span>
-      </div>`);
-  }
-
-  // 算法分布：覆盖所有做过的题（含没通过的），每条显示「做过 N（通过 M）」
-  const allPids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
+  // 每题的状态：是否通过、难度多少
   const problemInfo = new Map();
   for (const record of submissions) {
     if (!record.pid) continue;
-    const entry = problemInfo.get(record.pid) || { solved: false };
+    const entry = problemInfo.get(record.pid) || { solved: false, difficulty: 0 };
     if (record.accepted) entry.solved = true;
+    if (!entry.difficulty && record.difficulty) entry.difficulty = record.difficulty;
     problemInfo.set(record.pid, entry);
   }
+
+  // 按难度汇总：每档多少题、通过多少
+  const levels = Array.from({ length: 8 }, () => ({ total: 0, solved: 0 }));
+  for (const info of problemInfo.values()) {
+    const level = Math.max(0, Math.min(7, Number(info.difficulty) || 0));
+    levels[level].total += 1;
+    if (info.solved) levels[level].solved += 1;
+  }
+  const maxTotal = Math.max(...levels.map((item) => item.total), 1);
+
+  const bars = levels
+    .map((item, level) => {
+      if (item.total === 0) return '';
+      const totalHeight = Math.round((item.total / maxTotal) * 100);
+      const solvedShare = item.total ? (item.solved / item.total) * 100 : 0;
+      return `
+        <div class="diff-col" data-level="${level}" data-total="${item.total}" data-solved="${item.solved}">
+          <div class="diff-stack" style="height:${totalHeight}%">
+            <div class="seg unsolved" style="height:${100 - solvedShare}%"></div>
+            <div class="seg solved" style="height:${solvedShare}%"></div>
+          </div>
+          <div class="diff-label">${difficultyLabel(level)}</div>
+          <div class="diff-num">${item.total}</div>
+        </div>`;
+    })
+    .join('');
+
+  const allPids = [...problemInfo.keys()];
 
   const algoMap = new Map();
   for (const pid of allPids) {
@@ -699,8 +714,6 @@ function renderLuoguSummary() {
       </div>`
   );
 
-  const difficultyTotal = stats.histogram.reduce((a, b) => a + b, 0);
-
   el.luoguSummary.innerHTML = `
     <div class="luogu-stats">
       <span>提交 <b>${stats.submissions}</b></span>
@@ -709,8 +722,8 @@ function renderLuoguSummary() {
       <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
       <span>标签覆盖 <b>${taggedCount}/${stats.problems}</b></span>
     </div>
-    <div class="luogu-subtitle">难度分布（合计 ${difficultyTotal} 道）</div>
-    <div class="diff-bars">${diffRows.join('')}</div>
+    <div class="luogu-subtitle">难度分布（合计 ${problemInfo.size} 道 · 绿=已通过，灰=未通过）</div>
+    <div class="diff-chart">${bars}</div>
     ${
       algoRows.length
         ? `<div class="luogu-subtitle">算法分布（合计 ${taggedCount} 道，括号内为已通过数）</div><div class="diff-bars">${algoRows.join('')}</div>`
@@ -720,6 +733,34 @@ function renderLuoguSummary() {
               : '已抓取的题目里都没有算法标签（多为未评定题目）。'
           }</div>`
     }`;
+
+  // 悬停提示：显示这一刻度的通过/未通过数量
+  el.luoguSummary.querySelectorAll('.diff-col').forEach((col) => {
+    col.addEventListener('mousemove', (event) => {
+      const total = Number(col.dataset.total);
+      const solved = Number(col.dataset.solved);
+      showChartTip(event, `通过 ${solved} 道 · 未通过 ${total - solved} 道 · 共 ${total} 道`);
+    });
+    col.addEventListener('mouseleave', hideChartTip);
+  });
+}
+
+let chartTip = null;
+
+function showChartTip(event, text) {
+  if (!chartTip) {
+    chartTip = document.createElement('div');
+    chartTip.className = 'chart-tip';
+    document.body.appendChild(chartTip);
+  }
+  chartTip.textContent = text;
+  chartTip.style.display = 'block';
+  chartTip.style.left = `${event.clientX + 14}px`;
+  chartTip.style.top = `${event.clientY - 30}px`;
+}
+
+function hideChartTip() {
+  if (chartTip) chartTip.style.display = 'none';
 }
 
 /** 拉记录（自动翻页） */
