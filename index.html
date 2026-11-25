@@ -79,10 +79,11 @@
     </details>
 
     <details class="mycode" id="luogu">
-      <summary>洛谷做题数据（Cookie 绑定，可自动更新）</summary>
+      <summary>洛谷账号绑定</summary>
       <p class="mycode-hint">
-        登录洛谷 → 按 <b>F12</b> → 切到 <b>Network</b> → 刷新页面 → 点任意一条 <code>luogu.com.cn</code> 请求 → 右侧 <b>Request Headers</b> → 找到 <code>Cookie</code>，把 <code>__client_id=</code> 和 <code>_uid=</code> 等号后面的值分别填到下面两栏。<br />
-        ⚠️ Cookie 等同于你的登录态：只保存在本机浏览器，只发给 127.0.0.1；别截图发给别人，别提交到 Git。退出洛谷登录后会自动失效。
+        登录洛谷 → 按 <b>F12</b> → <b>Network</b> → 刷新页面 → 点任意一条 <code>luogu.com.cn</code> 请求 →
+        右侧 <b>Request Headers</b> 里找到 <code>Cookie</code>，把 <code>__client_id=</code> 和 <code>_uid=</code> 等号后面的值分别填进来。<br />
+        ⚠️ Cookie 等同于登录态：只存在本机浏览器，只发给 127.0.0.1，不会上传。
       </p>
       <div class="cookie-fields">
         <label>__client_id
@@ -96,14 +97,14 @@
         <summary>还有别的 Cookie？整行粘这里（可选）</summary>
         <textarea id="cookie-extra" spellcheck="false" placeholder="例如：__client_id=...; _uid=...; 其他名字=..."></textarea>
       </details>
+
       <div class="mycode-actions">
-        <button id="btn-save-cookie" class="primary">保存并同步</button>
-        <button id="btn-sync-luogu">立即同步</button>
-        <button id="btn-fetch-code">抓取代码并分析修改</button>
-        <button id="btn-fetch-tags">抓取题目标签</button>
-        <button id="btn-clear-cookie">清除</button>
-        <span id="cookie-status" class="muted"></span>
+        <button id="btn-save-cookie">保存绑定</button>
+        <button id="btn-sync-doing" class="primary">同步做题情况</button>
+        <button id="btn-analyze-profile" class="primary">分析个人情况</button>
+        <button id="btn-clear-cookie" class="link-btn">解绑</button>
       </div>
+      <div id="cookie-status" class="muted"></div>
       <div id="luogu-summary" class="luogu-summary"></div>
     </details>
   </main>
@@ -116,11 +117,7 @@
 
       <div class="ai-report">
         <div class="ai-head">
-          <span class="ai-title">AI 诊断</span>
-          <label class="auto-toggle"><input type="checkbox" id="auto-analyze" checked /> 同步后自动分析</label>
-        </div>
-        <div class="ai-actions">
-          <button id="btn-analyze">立即分析</button>
+          <span class="ai-title">个人分析</span>
           <span id="analyze-status" class="muted"></span>
         </div>
         <div id="analyze-body"></div>

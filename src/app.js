@@ -85,13 +85,10 @@ const el = {
   cookieUid: $('cookie-uid'),
   cookieExtra: $('cookie-extra'),
   saveCookie: $('btn-save-cookie'),
-  syncLuoguBtn: $('btn-sync-luogu'),
+  syncDoingBtn: $('btn-sync-doing'),
+  analyzeProfileBtn: $('btn-analyze-profile'),
   clearCookie: $('btn-clear-cookie'),
-  fetchCode: $('btn-fetch-code'),
-  fetchTags: $('btn-fetch-tags'),
   cookieStatus: $('cookie-status'),
-  autoAnalyze: $('auto-analyze'),
-  analyzeBtn: $('btn-analyze'),
   analyzeStatus: $('analyze-status'),
   analyzeBody: $('analyze-body'),
   algoDetailBody: $('algo-detail-body')
@@ -483,15 +480,6 @@ el.exportRuns.addEventListener('click', () => {
 
 /* ---------------- AI 诊断 ---------------- */
 
-const AUTO_KEY = 'algo-agent:auto-analyze';
-let autoAnalyze = true;
-try {
-  autoAnalyze = localStorage.getItem(AUTO_KEY) !== '0';
-} catch {
-  autoAnalyze = true;
-}
-el.autoAnalyze.checked = autoAnalyze;
-
 let analyzing = false;
 
 function setAnalyzeStatus(text, kind) {
@@ -499,7 +487,7 @@ function setAnalyzeStatus(text, kind) {
   el.analyzeStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
 }
 
-async function runAnalysis({ quiet = false } = {}) {
+async function runAnalysis() {
   if (analyzing) return;
   if (!lastDims) {
     setAnalyzeStatus('还没有可分析的数据', 'bad');
@@ -512,25 +500,19 @@ async function runAnalysis({ quiet = false } = {}) {
   }
 
   analyzing = true;
-  if (!quiet) setAnalyzeStatus('模型分析中…', 'muted');
-  el.analyzeBtn.disabled = true;
+  setAnalyzeStatus('模型分析中…', 'muted');
 
   const algorithms = computeAlgorithmStats();
   const response = await requestAnalysis(dims, lastStats || {}, algorithms);
-
   analyzing = false;
-  el.analyzeBtn.disabled = false;
 
   if (!response.ok) {
     const reason = response.reason || '';
     const hint =
-      reason === 'offline_file'
-        ? '离线版不连模型'
-        : reason === 'no_api_key'
-          ? '服务端没配 key'
-          : reason === 'timeout'
-            ? '模型超时'
-            : response.message || '分析失败';
+      reason === 'offline_file' ? '离线版不连模型'
+      : reason === 'no_api_key' ? '服务端没配 key'
+      : reason === 'timeout' ? '模型超时'
+      : response.message || '分析失败';
     setAnalyzeStatus(hint, 'bad');
     return;
   }
@@ -539,17 +521,6 @@ async function runAnalysis({ quiet = false } = {}) {
   setAnalyzeStatus('已更新', 'ok');
 }
 
-el.analyzeBtn.addEventListener('click', () => runAnalysis());
-
-el.autoAnalyze.addEventListener('change', () => {
-  autoAnalyze = el.autoAnalyze.checked;
-  try {
-    localStorage.setItem(AUTO_KEY, autoAnalyze ? '1' : '0');
-  } catch {
-    /* 忽略 */
-  }
-});
-
 el.clearRuns.addEventListener('click', () => {
   clearAll(localStorage);
   runs = [];
@@ -557,13 +528,15 @@ el.clearRuns.addEventListener('click', () => {
   refreshFeatures();
 });
 
-/* ---------------- 洛谷数据（Cookie 绑定） ---------------- */
+/* ---------------- 洛谷：绑定 + 两个动作 ---------------- */
 
 const LUOGU_KEY = 'algo-agent:submissions';
 const CLIENT_ID_KEY = 'algo-agent:luogu-client-id';
 const UID_KEY = 'algo-agent:luogu-uid';
+const PID_TAGS_KEY = 'algo-agent:pid-tags';
 
 let submissions = [];
+let pidTags = {};
 let clientId = '';
 let luoguUid = '';
 
@@ -571,6 +544,7 @@ try {
   const raw = localStorage.getItem(LUOGU_KEY);
   const parsed = raw ? JSON.parse(raw) : [];
   submissions = Array.isArray(parsed) ? parsed : [];
+  pidTags = JSON.parse(localStorage.getItem(PID_TAGS_KEY) || '{}') || {};
   clientId = localStorage.getItem(CLIENT_ID_KEY) || '';
   luoguUid = localStorage.getItem(UID_KEY) || '';
 } catch {
@@ -588,55 +562,21 @@ function saveSubmissions() {
   }
 }
 
+function savePidTags() {
+  try {
+    localStorage.setItem(PID_TAGS_KEY, JSON.stringify(pidTags));
+  } catch {
+    /* 忽略 */
+  }
+}
+
 function setCookieStatus(text, kind) {
   el.cookieStatus.textContent = text;
   el.cookieStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
 }
 
 if (clientId && luoguUid) {
-  setCookieStatus(`已保存 __client_id（${clientId.length} 字符），UID ${luoguUid}`, 'ok');
-}
-
-function renderLuoguSummary() {
-  if (submissions.length === 0) {
-    el.luoguSummary.innerHTML = '';
-    return;
-  }
-
-  const stats = summarizeSubmissions(submissions);
-  const max = Math.max(...stats.histogram.slice(1), 1);
-
-  const rows = [];
-  for (let level = 1; level <= 7; level += 1) {
-    const count = stats.histogram[level] || 0;
-    if (count === 0) continue;
-    rows.push(`
-      <div class="diff-row">
-        <span class="lvl">${difficultyLabel(level)}</span>
-        <span class="track"><span class="fill" style="width:${Math.round((count / max) * 100)}%"></span></span>
-        <span class="cnt">${count}</span>
-      </div>`);
-  }
-
-  el.luoguSummary.innerHTML = `
-    <div class="luogu-stats">
-      <span>提交 <b>${stats.submissions}</b></span>
-      <span>题目 <b>${stats.problems}</b></span>
-      <span>通过 <b>${stats.solved}</b></span>
-      <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
-      <span>跨度 <b>${(stats.firstAt || '').slice(0, 10)} ~ ${(stats.lastAt || '').slice(0, 10)}</b></span>
-    </div>
-    <div class="diff-bars">${rows.join('')}</div>`;
-}
-
-function mergeSubmissions(incoming) {
-  const map = new Map();
-  for (const record of [...submissions, ...incoming]) {
-    map.set(record.id || `${record.pid}-${record.submittedAt}`, record);
-  }
-  submissions = [...map.values()]
-    .sort((a, b) => new Date(a.submittedAt || 0) - new Date(b.submittedAt || 0))
-    .slice(-3000);
+  setCookieStatus(`已绑定 UID ${luoguUid}`, 'ok');
 }
 
 function readCookieForm() {
@@ -648,7 +588,6 @@ function readCookieForm() {
     .replace(/^_uid\s*=\s*/, '');
   const extra = String(el.cookieExtra.value || '').trim();
 
-  // 高级模式：整行 Cookie 优先，UID 从里面兜底解析
   if (extra) {
     if (!uid) {
       const match = extra.match(/(?:^|;\s*)_uid=(\d+)/);
@@ -663,13 +602,13 @@ function readCookieForm() {
   return { id, uid, cookie: `__client_id=${id}; _uid=${uid}` };
 }
 
-async function syncLuoguNow({ full = false, quiet = false } = {}) {
+/** 校验并记住绑定信息；失败时返回 null */
+function ensureBinding() {
   const form = readCookieForm();
   if (form.error) {
     setCookieStatus(form.error, 'bad');
-    return;
+    return null;
   }
-
   clientId = form.id;
   luoguUid = form.uid;
   try {
@@ -678,16 +617,81 @@ async function syncLuoguNow({ full = false, quiet = false } = {}) {
   } catch {
     /* 忽略 */
   }
+  return form;
+}
 
-  if (!quiet) setCookieStatus('同步中…', 'muted');
+function mergeSubmissions(incoming) {
+  const map = new Map();
+  for (const record of [...submissions, ...incoming]) {
+    map.set(record.id || `${record.pid}-${record.submittedAt}`, record);
+  }
+  submissions = [...map.values()]
+    .sort((a, b) => new Date(a.submittedAt || 0) - new Date(b.submittedAt || 0))
+    .slice(-3000);
+}
 
+/** 概览：总量 + 难度分布 + 算法分布 */
+function renderLuoguSummary() {
+  if (submissions.length === 0) {
+    el.luoguSummary.innerHTML = '';
+    return;
+  }
+
+  const stats = summarizeSubmissions(submissions);
+  const max = Math.max(...stats.histogram.slice(1), 1);
+
+  const diffRows = [];
+  for (let level = 1; level <= 7; level += 1) {
+    const count = stats.histogram[level] || 0;
+    if (count === 0) continue;
+    diffRows.push(`
+      <div class="diff-row">
+        <span class="lvl">${difficultyLabel(level)}</span>
+        <span class="track"><span class="fill" style="width:${Math.round((count / max) * 100)}%"></span></span>
+        <span class="cnt">${count}</span>
+      </div>`);
+  }
+
+  // 算法分布：按题目标签统计题目数
+  const algoCount = new Map();
+  for (const [pid] of new Map(submissions.map((r) => [r.pid, true]))) {
+    for (const tag of new Set(pidTags[pid] || [])) {
+      algoCount.set(tag, (algoCount.get(tag) || 0) + 1);
+    }
+  }
+  const algoList = [...algoCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const algoMax = Math.max(...algoList.map(([, n]) => n), 1);
+  const algoRows = algoList.map(
+    ([tag, count]) => `
+      <div class="diff-row">
+        <span class="lvl">${escapeText(tag)}</span>
+        <span class="track"><span class="fill" style="width:${Math.round((count / algoMax) * 100)}%"></span></span>
+        <span class="cnt">${count}</span>
+      </div>`
+  );
+
+  el.luoguSummary.innerHTML = `
+    <div class="luogu-stats">
+      <span>提交 <b>${stats.submissions}</b></span>
+      <span>题目 <b>${stats.problems}</b></span>
+      <span>通过 <b>${stats.solved}</b></span>
+      <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
+    </div>
+    <div class="diff-bars">${diffRows.join('')}</div>
+    ${
+      algoRows.length
+        ? `<div class="luogu-subtitle">算法分布（按题目）</div><div class="diff-bars">${algoRows.join('')}</div>`
+        : '<div class="algo-empty">还没有题目标签，点「同步做题情况」会自动抓取。</div>'
+    }`;
+}
+
+/** 拉记录（自动翻页） */
+async function syncPages(form) {
   const result = await syncLuoguWithCookie(form.uid, form.cookie, {
-    // full：一直翻到最后一页；增量：只拉前 2 页看有没有新提交
-    maxPages: full ? 200 : 2,
+    maxPages: 200,
     onProgress: (page, got, total) => {
-      if (quiet) return;
       const tail = typeof total === 'number' ? ` / 共 ${total} 条` : '';
-      setCookieStatus(`同步中… 第 ${page} 页，已拿到 ${got} 条${tail}`, 'muted');
+      setCookieStatus(`同步记录：第 ${page} 页，已拿到 ${got} 条${tail}`, 'muted');
     }
   });
 
@@ -695,114 +699,15 @@ async function syncLuoguNow({ full = false, quiet = false } = {}) {
   if (normalized.length > 0) {
     mergeSubmissions(normalized);
     saveSubmissions();
-    renderLuoguSummary();
-    refreshFeatures();
   }
-
-  if (!result.ok) {
-    const message = (result.error && result.error.message) || '同步失败';
-    setCookieStatus(`${message}${normalized.length ? `（已拿到 ${normalized.length} 条）` : ''}`, 'bad');
-    return;
-  }
-
-  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  setCookieStatus(`已同步 ${normalized.length} 条 · ${time}`, 'ok');
-
-  if (autoAnalyze && normalized.length > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
+  return { ok: result.ok, error: result.error, added: normalized.length };
 }
 
-el.saveCookie.addEventListener('click', () => syncLuoguNow({ full: true }));
-
-/**
- * 抓取每次提交的代码，用来分析“错误修正”的过程质量。
- * 只抓最近若干道「提交过多次」的题，控制请求量，别把洛谷打急。
- */
-el.fetchCode.addEventListener('click', async () => {
-  const form = readCookieForm();
-  if (form.error) {
-    setCookieStatus(form.error, 'bad');
-    return;
-  }
-  if (submissions.length === 0) {
-    setCookieStatus('先同步记录，再来抓代码', 'bad');
-    return;
-  }
-
-  const byProblem = new Map();
-  for (const record of submissions) {
-    if (!byProblem.has(record.pid)) byProblem.set(record.pid, []);
-    byProblem.get(record.pid).push(record);
-  }
-
-  const targets = [...byProblem.values()]
-    .filter((list) => list.length >= 2)
-    .slice(-15)
-    .map((list) => list.slice(-6));
-
-  const total = targets.reduce((sum, list) => sum + list.filter((r) => !r.code).length, 0);
-  if (total === 0) {
-    setCookieStatus('这些题的代码都已经抓过了', 'ok');
-    return;
-  }
-
-  let done = 0;
-  let ok = 0;
-
-  for (const list of targets) {
-    for (const record of list) {
-      if (record.code) continue;
-      const result = await fetchRecordCode(record.id, form.cookie);
-      if (result && result.ok && result.code) {
-        record.code = result.code;
-        ok += 1;
-      }
-      done += 1;
-      setCookieStatus(`抓取代码 ${done}/${total}，成功 ${ok}（慢是正常的）`, 'muted');
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
-
-  saveSubmissions();
-  refreshFeatures();
-  setCookieStatus(`已抓取 ${ok} 段代码，六维已重新计算`, 'ok');
-
-  // 抓完代码顺手做算法归类（一题多解，看代码实际用了什么）
-  await classifyCollectedCodes();
-
-  if (autoAnalyze && ok > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
-});
-
-/* ---------------- 题目标签（决定“强势/弱势算法”） ---------------- */
-
-const PID_TAGS_KEY = 'algo-agent:pid-tags';
-let pidTags = {};
-try {
-  pidTags = JSON.parse(localStorage.getItem(PID_TAGS_KEY) || '{}') || {};
-} catch {
-  pidTags = {};
-}
-
-function savePidTags() {
-  try {
-    localStorage.setItem(PID_TAGS_KEY, JSON.stringify(pidTags));
-  } catch {
-    /* 忽略 */
-  }
-}
-
-el.fetchTags.addEventListener('click', async () => {
-  const form = readCookieForm();
-  if (form.error) {
-    setCookieStatus(form.error, 'bad');
-    return;
-  }
-
+/** 抓题目标签（用于按算法分类） */
+async function syncTags(form, limit = 120) {
   const pids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
-  const need = pids.filter((pid) => !pidTags[pid]).slice(-80);
-  if (need.length === 0) {
-    setCookieStatus('题目标签已经抓全了', 'ok');
-    return;
-  }
+  const need = pids.filter((pid) => !pidTags[pid]).slice(0, limit);
+  if (need.length === 0) return { ok: true, added: 0 };
 
   let done = 0;
   let ok = 0;
@@ -814,30 +719,119 @@ el.fetchTags.addEventListener('click', async () => {
     }
     done += 1;
     if (done % 5 === 0 || done === need.length) {
-      setCookieStatus(`抓取题目标签 ${done}/${need.length}，成功 ${ok}（慢是正常的）`, 'muted');
+      setCookieStatus(`抓取题目标签 ${done}/${need.length}`, 'muted');
     }
-    await new Promise((resolve) => setTimeout(resolve, 180));
+    await new Promise((resolve) => setTimeout(resolve, 160));
   }
 
   savePidTags();
-  setCookieStatus(`已抓取 ${ok} 道题的标签`, 'ok');
-  if (autoAnalyze && ok > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
-});
+  return { ok: true, added: ok };
+}
 
-/**
- * 把已抓到的代码分批交给模型打标签（每批 6 段，最多 5 批，控制成本）。
- * 结果写在 record.algoTags 上，按“代码实际用的算法”统计强弱。
- */
-async function classifyCollectedCodes() {
-  const pending = submissions.filter((r) => r.code && !(Array.isArray(r.algoTags) && r.algoTags.length));
-  if (pending.length === 0) {
-    setCookieStatus('代码算法标签已齐', 'ok');
+/** 动作一：同步做题情况（只统计，不调用模型） */
+async function syncDoing() {
+  const form = ensureBinding();
+  if (!form) return;
+
+  el.syncDoingBtn.disabled = true;
+  try {
+    setCookieStatus('同步记录中…', 'muted');
+    const records = await syncPages(form);
+    if (!records.ok) {
+      setCookieStatus(`同步失败：${(records.error && records.error.message) || '未知原因'}`, 'bad');
+      return;
+    }
+
+    const tags = await syncTags(form);
+    renderLuoguSummary();
+    refreshFeatures();
+
+    const stats = summarizeSubmissions(submissions);
+    setCookieStatus(
+      `已同步 ${records.added} 条提交，共 ${stats.problems} 道题；抓到 ${tags.added} 道题的标签`,
+      'ok'
+    );
+  } finally {
+    el.syncDoingBtn.disabled = false;
+  }
+}
+
+/** 动作二：分析个人情况（抓代码 → 归类 → 模型诊断） */
+async function analyzeProfile() {
+  const form = ensureBinding();
+  if (!form) return;
+
+  const health = await checkHealth();
+  if (!health.ok || !health.data.key_configured) {
+    setCookieStatus('需要先在 .env 里配置模型 key，才能做个人分析', 'bad');
     return;
   }
 
+  if (submissions.length === 0) {
+    setCookieStatus('还没有做题记录，先点「同步做题情况」', 'bad');
+    return;
+  }
+
+  el.analyzeProfileBtn.disabled = true;
+  try {
+    await fetchCodesForAnalysis(form);
+    await classifyCollectedCodes();
+    refreshFeatures();
+
+    setCookieStatus('模型分析中…', 'muted');
+    await runAnalysis();
+    setCookieStatus('分析完成', 'ok');
+  } finally {
+    el.analyzeProfileBtn.disabled = false;
+  }
+}
+
+/** 抓代码：只抓「多次提交」的题，每题最多 5 次，总量可控 */
+async function fetchCodesForAnalysis(form, maxProblems = 12, perProblem = 5) {
+  const byProblem = new Map();
+  for (const record of submissions) {
+    if (!byProblem.has(record.pid)) byProblem.set(record.pid, []);
+    byProblem.get(record.pid).push(record);
+  }
+
+  const targets = [...byProblem.values()]
+    .filter((list) => list.length >= 2)
+    .slice(-maxProblems)
+    .map((list) => list.slice(-perProblem));
+
+  const total = targets.reduce((sum, list) => sum + list.filter((r) => !r.code).length, 0);
+  if (total === 0) return;
+
+  let done = 0;
+  let ok = 0;
+  for (const list of targets) {
+    for (const record of list) {
+      if (record.code) continue;
+      const result = await fetchRecordCode(record.id, form.cookie);
+      if (result && result.ok && result.code) {
+        record.code = result.code;
+        ok += 1;
+      }
+      done += 1;
+      setCookieStatus(`抓取代码 ${done}/${total}`, 'muted');
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    }
+  }
+
+  saveSubmissions();
+  if (ok === 0) setCookieStatus('没能抓到代码（可能记录不可见）', 'bad');
+}
+
+/**
+ * 把已抓到的代码分批交给模型打标签（每批 6 段，最多 5 批）。
+ * 结果写在 record.algoTags / algoReason 上。
+ */
+async function classifyCollectedCodes() {
+  const pending = submissions.filter((r) => r.code && !(Array.isArray(r.algoTags) && r.algoTags.length));
+  if (pending.length === 0) return;
+
   const batchSize = 6;
-  const maxBatches = 5;
-  const queue = pending.slice(0, batchSize * maxBatches);
+  const queue = pending.slice(0, batchSize * 5);
   let done = 0;
   let tagged = 0;
 
@@ -867,12 +861,8 @@ async function classifyCollectedCodes() {
   }
 
   saveSubmissions();
-  refreshFeatures();
-  setCookieStatus(`已归类 ${tagged} 段代码的算法`, 'ok');
-
-  if (autoAnalyze && tagged > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 }
-/** 按算法聚合：优先看“代码实际用的算法”，没有代码时才退回题目标签 */
+
 /** 展示“凭什么这么判断”：每道题用的算法 + 模型给的依据 */
 function renderAlgoDetail() {
   if (!el.algoDetailBody) return;
@@ -886,7 +876,7 @@ function renderAlgoDetail() {
 
   if (latest.size === 0) {
     el.algoDetailBody.innerHTML =
-      '<div class="algo-empty">还没有代码归类数据。点「抓取代码并分析修改」后会自动生成。</div>';
+      '<div class="algo-empty">还没有代码归类数据。点「分析个人情况」后会自动生成。</div>';
     return;
   }
 
@@ -906,6 +896,7 @@ function renderAlgoDetail() {
       .join('');
 }
 
+/** 按算法聚合：优先看“代码实际用的算法”，没有代码时才退回题目标签 */
 function computeAlgorithmStats() {
   const byProblem = new Map();
   for (const record of submissions) {
@@ -919,7 +910,6 @@ function computeAlgorithmStats() {
   const codeTagged = submissions.filter((r) => Array.isArray(r.algoTags) && r.algoTags.length > 0);
   const usingCode = codeTagged.length > 0;
 
-  // 每题取“最后一次提交”的算法标签；同时统计一题多解
   const perProblem = new Map();
   for (const record of codeTagged) {
     if (!perProblem.has(record.pid)) perProblem.set(record.pid, []);
@@ -967,6 +957,31 @@ function computeAlgorithmStats() {
     taggedProblems: usingCode ? codeTagsByProblem.size : Object.keys(pidTags).length
   };
 }
+
+/* 两个主按钮：绑定信息在点击时校验并记住 */
+el.saveCookie.addEventListener('click', () => {
+  const form = ensureBinding();
+  if (form) setCookieStatus('已保存绑定，可以点「同步做题情况」了', 'ok');
+});
+
+el.syncDoingBtn.addEventListener('click', syncDoing);
+el.analyzeProfileBtn.addEventListener('click', analyzeProfile);
+
+el.clearCookie.addEventListener('click', () => {
+  clientId = '';
+  luoguUid = '';
+  try {
+    localStorage.removeItem(CLIENT_ID_KEY);
+    localStorage.removeItem(UID_KEY);
+  } catch {
+    /* 忽略 */
+  }
+  el.cookieClientId.value = '';
+  el.cookieUid.value = '';
+  el.cookieExtra.value = '';
+  setCookieStatus('已解绑（已同步的数据保留）', 'muted');
+});
+
 /* ---------------- 知识图谱侧边栏 ---------------- */
 
 function renderKnowledgeGraph() {
@@ -1120,13 +1135,10 @@ renderKnowledgeGraph();
 renderRecommend();
 renderRuns();
 renderLuoguSummary();
+renderAlgoDetail();
 refreshFeatures();
 build();
 
-// 已经保存过 Cookie 的，启动后静默同步一次第一页
-if (clientId && luoguUid) {
-  setTimeout(() => syncLuoguNow({ full: false, quiet: true }), 2500);
-}
 diagnosisView.show({
   result: diagnose('int a[10]; for (int i = 0; i <= n; i++) { a[i] = 0; }'),
   source: 'rules'

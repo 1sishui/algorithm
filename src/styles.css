@@ -562,3 +562,21 @@ details pre { margin-top: 6px; }
 .algo-item .tags { color: var(--text); }
 .algo-item .reason { color: var(--muted); font-size: 11.5px; display: block; }
 .algo-empty { color: var(--muted); font-size: 11.5px; }
+
+/* ---------- 两个主按钮 ---------- */
+#btn-sync-doing, #btn-analyze-profile { min-width: 120px; }
+.link-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  text-decoration: underline;
+  padding: 6px 4px;
+}
+.link-btn:hover { color: var(--text); }
+.luogu-subtitle {
+  margin: 12px 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .05em;
+}
+#cookie-status { margin: 6px 0 10px; font-size: 12px; }
