@@ -939,6 +939,7 @@ details pre { margin-top: 6px; }
     <div class="mycode-actions">
       <button id="btn-sync-doing" class="primary">同步做题情况</button>
       <button id="btn-analyze-profile" class="primary">分析个人情况</button>
+      <button id="btn-refetch-tags">重新抓取标签</button>
       <span id="data-status" class="muted luogu-status"></span>
     </div>
 
@@ -1148,7 +1149,22 @@ function categoriesOfTags(tags) {
   }
   return result;
 }
-return { categoryOfTag, categoriesOfTags };
+/**
+ * 判断一个标签是不是“非算法标签”。
+ * 老版本抓取时把年份（2005）、比赛来源（NOIP 普及组、USACO）也存了进来，
+ * 这些统一当噪音过滤掉，避免它们全落进「其他」。
+ */
+const NOISE_PATTERN = /^(19|20)\d{2}$|NOIP|NOI|USACO|ICPC|CCPC|GESP|CSP|省选|联赛|杯|公开赛|月赛|组$|赛$|^[A-Z]{2,}$/;
+
+function isNoiseTag(name) {
+  const text = String(name || '')
+    .replace(/\ufeff/g, '')
+    .trim();
+  if (!text) return true;
+  if (/^\d+$/.test(text)) return true;
+  return NOISE_PATTERN.test(text);
+}
+return { categoryOfTag, categoriesOfTags, isNoiseTag };
 })();
 
 /* ===== src/diagnosis/rules.js ===== */
@@ -4206,7 +4222,7 @@ const { runUserCode, TEMPLATE } = __m_user_runner;
 const { computeFeatures } = __m_assessment_features;
 const { computeSubmissionFeatures } = __m_assessment_submissions;
 const { normalizeRecords, summarizeSubmissions, difficultyLabel } = __m_import_luogu;
-const { categoriesOfTags, categoryOfTag } = __m_knowledge_tagCategories;
+const { categoriesOfTags, categoryOfTag, isNoiseTag } = __m_knowledge_tagCategories;
 const { buildCategoryStats, renderVerdict } = __m_ui_verdict;
 const { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } = __m_import_luoguClient;
 const { requestAnalysis, renderReport } = __m_agent_report;
@@ -4265,6 +4281,7 @@ const el = {
   saveCookie: $('btn-save-cookie'),
   syncDoingBtn: $('btn-sync-doing'),
   analyzeProfileBtn: $('btn-analyze-profile'),
+  refetchTags: $('btn-refetch-tags'),
   clearCookie: $('btn-clear-cookie'),
   cookieStatus: $('cookie-status'),
   analyzeStatus: $('analyze-status'),
@@ -4779,8 +4796,11 @@ if (clientId && luoguUid) {
 function tagEntry(pid) {
   const value = pidTags[pid];
   if (!value) return { tags: [], categories: [] };
-  if (Array.isArray(value)) return { tags: value, categories: value };
-  const tags = Array.isArray(value.tags) ? value.tags : [];
+  if (Array.isArray(value)) {
+    const tags = value.filter((tag) => !isNoiseTag(tag));
+    return { tags, categories: tags };
+  }
+  const tags = (Array.isArray(value.tags) ? value.tags : []).filter((tag) => !isNoiseTag(tag));
   const categories = Array.isArray(value.categories) && value.categories.length ? value.categories : tags;
   return { tags, categories };
 }
@@ -5338,6 +5358,27 @@ el.saveCookie.addEventListener('click', () => {
 });
 
 el.syncDoingBtn.addEventListener('click', syncDoing);
+
+el.refetchTags.addEventListener('click', async () => {
+  const form = ensureBinding();
+  if (!form) return;
+
+  pidTags = {};
+  savePidTags();
+  el.refetchTags.disabled = true;
+  try {
+    setCookieStatus('重新抓取全部题目标签…', 'muted');
+    const tags = await syncTags(form);
+    renderLuoguSummary();
+    refreshFeatures();
+    setCookieStatus(
+      `标签重抓完成：${tags.tagged}/${tags.total} 道` + (tags.failed ? `，${tags.failed} 道失败` : ''),
+      tags.failed ? 'bad' : 'ok'
+    );
+  } finally {
+    el.refetchTags.disabled = false;
+  }
+});
 el.analyzeProfileBtn.addEventListener('click', analyzeProfile);
 
 el.clearCookie.addEventListener('click', () => {

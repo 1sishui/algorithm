@@ -20,7 +20,7 @@ import { runUserCode, TEMPLATE } from './user/runner.js';
 import { computeFeatures } from './assessment/features.js';
 import { computeSubmissionFeatures } from './assessment/submissions.js';
 import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './import/luogu.js';
-import { categoriesOfTags, categoryOfTag } from './knowledge/tagCategories.js';
+import { categoriesOfTags, categoryOfTag, isNoiseTag } from './knowledge/tagCategories.js';
 import { buildCategoryStats, renderVerdict } from './ui/verdict.js';
 import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
 import { requestAnalysis, renderReport } from './agent/report.js';
@@ -88,6 +88,7 @@ const el = {
   saveCookie: $('btn-save-cookie'),
   syncDoingBtn: $('btn-sync-doing'),
   analyzeProfileBtn: $('btn-analyze-profile'),
+  refetchTags: $('btn-refetch-tags'),
   clearCookie: $('btn-clear-cookie'),
   cookieStatus: $('cookie-status'),
   analyzeStatus: $('analyze-status'),
@@ -602,8 +603,11 @@ if (clientId && luoguUid) {
 function tagEntry(pid) {
   const value = pidTags[pid];
   if (!value) return { tags: [], categories: [] };
-  if (Array.isArray(value)) return { tags: value, categories: value };
-  const tags = Array.isArray(value.tags) ? value.tags : [];
+  if (Array.isArray(value)) {
+    const tags = value.filter((tag) => !isNoiseTag(tag));
+    return { tags, categories: tags };
+  }
+  const tags = (Array.isArray(value.tags) ? value.tags : []).filter((tag) => !isNoiseTag(tag));
   const categories = Array.isArray(value.categories) && value.categories.length ? value.categories : tags;
   return { tags, categories };
 }
@@ -1161,6 +1165,27 @@ el.saveCookie.addEventListener('click', () => {
 });
 
 el.syncDoingBtn.addEventListener('click', syncDoing);
+
+el.refetchTags.addEventListener('click', async () => {
+  const form = ensureBinding();
+  if (!form) return;
+
+  pidTags = {};
+  savePidTags();
+  el.refetchTags.disabled = true;
+  try {
+    setCookieStatus('重新抓取全部题目标签…', 'muted');
+    const tags = await syncTags(form);
+    renderLuoguSummary();
+    refreshFeatures();
+    setCookieStatus(
+      `标签重抓完成：${tags.tagged}/${tags.total} 道` + (tags.failed ? `，${tags.failed} 道失败` : ''),
+      tags.failed ? 'bad' : 'ok'
+    );
+  } finally {
+    el.refetchTags.disabled = false;
+  }
+});
 el.analyzeProfileBtn.addEventListener('click', analyzeProfile);
 
 el.clearCookie.addEventListener('click', () => {
