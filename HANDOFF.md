@@ -8,15 +8,24 @@
 成都东软学院 2026 校级学生科研项目：**面向算法学习的导向型智能体**。
 纯前端 + Serverless，做三件事：算法可视化、错误诊断（大模型）、基于真实做题记录的六维评估。
 
-## 怎么跑
+## 要跑
 
 | 文件 | 作用 |
 |---|---|
 | `启动.bat` | 起本地服务（`serve.py`，端口 8123），会先关掉旧进程 |
-| `上传代码.bat` | git add + commit + push |
-| `算法学习智能体-离线版.html` | 单文件打包版，双击即开（无模型能力） |
+| `上传代码.bat` | git add + commit + **推送当前分支**（不是 main） |
+| `测试.bat` | 跑 JS 自测 + Python 单测（没装 Node 会跳过 JS 部分） |
 | `serve.py` | 静态服务 + API 代理（诊断/分析/洛谷） |
 | `.env` | 模型 key（`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`），**不入库** |
+| `tools/build-offline.mjs` | 生成离线单文件版（不入库） |
+
+## 仓库与协作现状（2026-11-25）
+
+- 仓库：https://github.com/1sishui/algorithm
+- `main` 已开分支保护：**必须 PR + 1 人批准 + CI（tests）通过**，禁止直推和强推
+- CI：`.github/workflows/tests.yml`，推 PR 时自动跑，约 15–25 秒
+- 协作者：还在加（Settings → Collaborators）
+- 网络：本机需开代理（Clash，127.0.0.1:7897）才能访问 GitHub；git 已配全局代理
 
 当前模型：qwen-plus（阿里百炼，OpenAI 兼容接口）。
 
