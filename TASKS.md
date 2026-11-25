@@ -169,6 +169,71 @@ python test/spotcheck.py
 4. **不许直接改别人的模块**：改接口先发群里说一声
 5. **文件命名**：交付物统一放 `docs/`（软著、报告、采集表）
 
+---
+
+## 四个人的改动怎么合到一起
+
+### 先定「谁负责哪些文件」
+
+冲突 90% 来自三个人同时改同一个文件。所以按目录分家：
+
+| 人 | 自己的文件 | 尽量别碰 |
+|---|---|---|
+| 熊 | `index.html`、`src/app.js`、`src/styles.css`、`启动.bat`、文档 | 算法/评估模块 |
+| 金 | `src/render/*`、`src/algorithms/graph/*`、`src/algorithms/tree/*` | `app.js` |
+| 张 | `server/llm_proxy.py`（提示词部分）、`src/diagnosis/*`、知识点数据 | 渲染器 |
+| 刁 | `src/assessment/*`、`src/ui/verdict.js`、`src/config.js` | `app.js` |
+
+**必须改别人文件时**：先在群里说一句，改完在 PR 描述里写清楚。
+
+### 每天的动作（3 条命令）
+
+```powershell
+git pull --rebase          # 开工前，先拿别人的改动
+# ……改代码……
+双击 测试.bat              # 跑一遍自测，绿了再提交
+git add -A
+git commit -m "一句话说明改了什么"
+git push
+```
+
+收工前必须 push，不要攒到周五。
+
+### 每周五：合并窗口
+
+1. 每人发起 PR：`feat/姓名-功能` → `main`
+2. **必须满足三条才能合**：
+   - GitHub Actions 的 `tests` 全绿（自动跑，红了就是有测试挂了）
+   - 至少 1 人 review 过
+   - 改动只涉及自己负责的文件，或已说明
+3. 熊点合并，然后本地 `git pull` 验证一遍
+
+### 冲突了怎么办
+
+```powershell
+git pull --rebase
+# 冲突文件会标出来
+# 打开文件，找 <<<<<<< ======= >>>>>>> 三段
+# 保留正确的代码，删掉标记
+git add 冲突文件
+git rebase --continue
+```
+
+**谁改的谁解**，别让一个人替所有人解冲突。实在解不开：`git rebase --abort` 回退，找熊一起看。
+
+### 两个已经踩过的坑
+
+1. **`算法学习智能体-离线版.html` 已移出版本库**（它是打包产物，150KB 单文件，每次都会冲突）。需要时由熊本地跑 `node tools/build-offline.mjs .` 生成。
+2. **`src/app.js` 是最大的公共文件**。新增功能优先写成新模块（`src/ui/xxx.js`），在 `app.js` 里只加一行 import 和一处调用。
+
+### 合并后的验收（熊做）
+
+```powershell
+git pull
+双击 启动.bat
+# 三页都点一遍：可视化能播放、绑定能保存、数据页有图
+```
+
 ## 本周五（11/29）要看到的
 
 - [ ] 三人环境截图
