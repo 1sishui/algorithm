@@ -939,7 +939,6 @@ details pre { margin-top: 6px; }
     <div class="mycode-actions">
       <button id="btn-sync-doing" class="primary">同步做题情况</button>
       <button id="btn-analyze-profile" class="primary">分析个人情况</button>
-      <button id="btn-refetch-tags">重新抓取标签</button>
       <span id="data-status" class="muted luogu-status"></span>
     </div>
 
@@ -4281,7 +4280,6 @@ const el = {
   saveCookie: $('btn-save-cookie'),
   syncDoingBtn: $('btn-sync-doing'),
   analyzeProfileBtn: $('btn-analyze-profile'),
-  refetchTags: $('btn-refetch-tags'),
   clearCookie: $('btn-clear-cookie'),
   cookieStatus: $('cookie-status'),
   analyzeStatus: $('analyze-status'),
@@ -4730,11 +4728,13 @@ const LUOGU_KEY = 'algo-agent:submissions';
 const CLIENT_ID_KEY = 'algo-agent:luogu-client-id';
 const UID_KEY = 'algo-agent:luogu-uid';
 const PID_TAGS_KEY = 'algo-agent:pid-tags';
+const SYNCED_KEY = 'algo-agent:synced-at';
 
 let submissions = [];
 let pidTags = {};
 let clientId = '';
 let luoguUid = '';
+let syncedAt = 0;
 
 try {
   const raw = localStorage.getItem(LUOGU_KEY);
@@ -4743,6 +4743,7 @@ try {
   pidTags = JSON.parse(localStorage.getItem(PID_TAGS_KEY) || '{}') || {};
   clientId = localStorage.getItem(CLIENT_ID_KEY) || '';
   luoguUid = localStorage.getItem(UID_KEY) || '';
+  syncedAt = Number(localStorage.getItem(SYNCED_KEY) || 0) || 0;
 } catch {
   submissions = [];
 }
@@ -4770,6 +4771,17 @@ function saveSubmissions() {
   } catch {
     setCookieStatus('本地存储已满，这次的数据没能保存（刷新后会回到上次状态）', 'bad');
   }
+}
+
+function markSynced() {
+  syncedAt = Date.now();
+  try {
+    localStorage.setItem(SYNCED_KEY, String(syncedAt));
+  } catch {
+    /* 忽略 */
+  }
+  el.analyzeProfileBtn.disabled = false;
+  el.analyzeProfileBtn.title = '';
 }
 
 function savePidTags() {
@@ -5069,10 +5081,16 @@ async function syncPages(form) {
 async function syncTags(form) {
   // 抓全部做过的题：没做出来的题也要参与算法强弱的判断
   const pids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
-  // 没抓过（undefined）的才需要抓；抓过但确实没标签（[]）不重复打扰洛谷
-  const need = pids.filter((pid) => pidTags[pid] === undefined);
+  // 没抓过的、以及老数据里抓成空但没标记 checked 的，都补抓一次
+  const need = pids.filter((pid) => {
+    const entry = pidTags[pid];
+    if (entry === undefined) return true;
+    if (entry && entry.checked) return false;
+    return tagEntry(pid).tags.length === 0;
+  });
   if (need.length === 0) {
-    return { ok: true, added: 0, failed: 0, total: pids.length, tagged: pids.filter((p) => (pidTags[p] || []).length).length };
+    const tagged = pids.filter((pid) => tagEntry(pid).tags.length > 0).length;
+    return { ok: true, added: 0, failed: 0, total: pids.length, tagged, empty: pids.length - tagged };
   }
 
   let done = 0;
@@ -5082,7 +5100,7 @@ async function syncTags(form) {
   const grab = async (pid) => {
     const result = await fetchProblemTags(pid, form.cookie);
     if (result && result.ok) {
-      pidTags[pid] = { tags: result.tags || [], categories: result.categories || [] };
+      pidTags[pid] = { tags: result.tags || [], categories: result.categories || [], checked: true };
       return true;
     }
     return false;
@@ -5111,7 +5129,7 @@ async function syncTags(form) {
 
   savePidTags();
   const tagged = pids.filter((p) => tagEntry(p).tags.length > 0).length;
-  return { ok: true, added: ok, failed: failed.length, total: pids.length, tagged };
+  return { ok: true, added: ok, failed: failed.length, total: pids.length, tagged, empty: pids.length - tagged };
 }
 
 /** 动作一：同步做题情况（只统计，不调用模型） */
@@ -5133,10 +5151,11 @@ async function syncDoing() {
     refreshFeatures();
 
     const stats = summarizeSubmissions(submissions);
+    markSynced();
     setCookieStatus(
       `已同步 ${records.added} 条提交，共 ${stats.problems} 道题（通过 ${stats.solved} 道）；` +
-        `题目标签覆盖 ${tags.tagged}/${tags.total} 道` +
-        (tags.failed ? `，${tags.failed} 道抓取失败（可再点一次重试）` : ''),
+        `标签：${tags.tagged} 道有 / ${tags.empty} 道洛谷没有算法标签` +
+        (tags.failed ? ` / ${tags.failed} 道抓取失败` : ''),
       tags.failed ? 'bad' : 'ok'
     );
   } finally {
@@ -5148,6 +5167,12 @@ async function syncDoing() {
 async function analyzeProfile() {
   const form = ensureBinding();
   if (!form) return;
+
+  // 必须先同步过做题情况，才有数据可分析
+  if (!syncedAt || submissions.length === 0) {
+    setCookieStatus('请先点「同步做题情况」，同步完成后才能分析个人情况', 'bad');
+    return;
+  }
 
   const health = await checkHealth();
   if (!health.ok || !health.data.key_configured) {
@@ -5358,27 +5383,6 @@ el.saveCookie.addEventListener('click', () => {
 });
 
 el.syncDoingBtn.addEventListener('click', syncDoing);
-
-el.refetchTags.addEventListener('click', async () => {
-  const form = ensureBinding();
-  if (!form) return;
-
-  pidTags = {};
-  savePidTags();
-  el.refetchTags.disabled = true;
-  try {
-    setCookieStatus('重新抓取全部题目标签…', 'muted');
-    const tags = await syncTags(form);
-    renderLuoguSummary();
-    refreshFeatures();
-    setCookieStatus(
-      `标签重抓完成：${tags.tagged}/${tags.total} 道` + (tags.failed ? `，${tags.failed} 道失败` : ''),
-      tags.failed ? 'bad' : 'ok'
-    );
-  } finally {
-    el.refetchTags.disabled = false;
-  }
-});
 el.analyzeProfileBtn.addEventListener('click', analyzeProfile);
 
 el.clearCookie.addEventListener('click', () => {
@@ -5574,6 +5578,12 @@ renderLuoguSummary();
 renderAlgoDetail();
 refreshFeatures();
 build();
+
+// 没同步过就不能分析个人情况
+if (!syncedAt) {
+  el.analyzeProfileBtn.disabled = true;
+  el.analyzeProfileBtn.title = '请先同步做题情况';
+}
 
 // 恢复上次停留的页面
 let savedView = 'visual';
