@@ -2791,59 +2791,64 @@ function computeSubmissionFeatures(records) {
 
   const dims = {};
 
-  /* 1. 错误修正：每题通过之前提交了几次 */
+  /* 1. 错误修正：从“第一次提交”到“通过”用了几次，指数衰减，永远落在 0–100 */
   {
     const scores = problems.map((item) => {
-      if (!item.accepted) return 15;
-      return clamp(100 - 18 * (item.attempts - 1), 20, 100);
+      if (!item.accepted) return 0; // 一直没做出来，视为没有收敛
+      // 1 次通过 = 100；2 次 ≈ 85；5 次 ≈ 52；10 次 ≈ 23；不会出现负数
+      return 100 * Math.pow(0.85, item.attempts - 1);
     });
     const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
     const neverSolved = problems.length - solved.length;
+    const solvedAvg =
+      solved.length > 0
+        ? solved.reduce((sum, item) => sum + 100 * Math.pow(0.85, item.attempts - 1), 0) / solved.length
+        : 0;
 
     dims.fix = {
-      value: Math.round(avg),
-      detail: `洛谷：共 ${problems.length} 题，通过 ${solved.length} 题${neverSolved ? `，未通过 ${neverSolved} 题` : ''}；按“首次通过前的提交次数”折算`
+      value: Math.round(clamp(avg)),
+      detail:
+        `洛谷：共 ${problems.length} 题，通过 ${solved.length} 题` +
+        (neverSolved ? `，未通过 ${neverSolved} 题（记 0 分）` : '') +
+        `；通过题平均 ${solvedAvg.toFixed(0)} 分（按首次通过前的提交次数衰减）`
     };
   }
 
-  /* 2. 题型迁移：解决率 × 难度覆盖 */
+  /* 2. 题型迁移：通过率 —— 能把多少“做过的题”真正做出来 */
   {
     const solveRate = problems.length ? solved.length / problems.length : 0;
-    const usedLevels = levels.filter((count) => count > 0).length;
-    const spread = usedLevels / 8;
 
     dims.transfer = {
-      value: Math.round(clamp(100 * solveRate * (0.6 + 0.4 * spread))),
-      detail: `洛谷：解决率 ${(solveRate * 100).toFixed(0)}%，覆盖 ${usedLevels} 个难度层`
+      value: Math.round(clamp(100 * solveRate)),
+      detail: `洛谷：做过 ${problems.length} 题，通过 ${solved.length} 题，通过率 ${(solveRate * 100).toFixed(0)}%`
     };
   }
 
-  /* 3. 思路多样性：难度层数 + 语言种类 */
+  /* 3. 思路多样性：覆盖了几个难度层（8 层）——竞赛选手基本只用 C++，语言不计入 */
   {
     const usedLevels = levels.filter((count) => count > 0).length;
-    const languages = new Set(list.map((r) => r.language).filter(Boolean)).size || 1;
-    const value = 100 * (0.7 * (usedLevels / 8) + 0.3 * Math.min(1, languages / 3));
 
     dims.diversity = {
-      value: Math.round(clamp(value)),
-      detail: `洛谷：覆盖 ${usedLevels} 个难度层、${languages} 种语言`
+      value: Math.round(clamp((usedLevels / 8) * 100)),
+      detail: `洛谷：覆盖 ${usedLevels} / 8 个难度层`
     };
   }
 
-  /* 4. 尝试模式：每题提交次数的中位数（1 次像抄模板，2–4 次是正常迭代） */
+  /* 4. 尝试模式：每题提交次数的中位数 —— 2–3 次是健康区间 */
   {
     const attempts = problems.map((item) => item.attempts);
     const mid = median(attempts);
     let value;
-    if (mid <= 3) value = 45 + 25 * (mid - 1);
-    else value = Math.max(50, 95 - 10 * (mid - 3));
+    if (mid <= 1) value = 45;
+    else if (mid === 2) value = 85;
+    else if (mid === 3) value = 100;
+    else value = Math.max(20, 100 - 12 * (mid - 3));
 
     dims.attempt = {
       value: Math.round(clamp(value)),
       detail: `洛谷：每题平均提交 ${(list.length / problems.length).toFixed(1)} 次，中位数 ${mid} 次`
     };
   }
-
   /* 5. 覆盖均衡：练习量在难度层上的分布熵 */
   {
     const h = entropy(levels);
