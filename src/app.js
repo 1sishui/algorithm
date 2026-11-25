@@ -81,7 +81,6 @@ const el = {
   historyStats: $('history-stats'),
   exportRuns: $('btn-export-runs'),
   clearRuns: $('btn-clear-runs'),
-  luogu: $('luogu'),
   luoguSummary: $('luogu-summary'),
   cookieClientId: $('cookie-client-id'),
   cookieUid: $('cookie-uid'),
@@ -588,8 +587,11 @@ function savePidTags() {
 }
 
 function setCookieStatus(text, kind) {
-  el.cookieStatus.textContent = text;
-  el.cookieStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+  const cls = `muted luogu-status ${kind || ''}`.trim();
+  document.querySelectorAll('.luogu-status').forEach((node) => {
+    node.textContent = text;
+    node.className = cls;
+  });
 }
 
 if (clientId && luoguUid) {
@@ -1305,6 +1307,28 @@ setInterval(() => {
   }
 }, 600);
 
+/* ---------------- 页面切换 ---------------- */
+
+const rail = document.getElementById('rail');
+
+function switchView(view) {
+  document.body.className = `view-${view}`;
+  rail.querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.view === view);
+  });
+  if (view === 'data') renderLuoguSummary();
+  try {
+    localStorage.setItem('algo-agent:view', view);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+rail.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-view]');
+  if (button) switchView(button.dataset.view);
+});
+
 /* ---------------- 启动 ---------------- */
 
 renderKnowledgeGraph();
@@ -1314,6 +1338,15 @@ renderLuoguSummary();
 renderAlgoDetail();
 refreshFeatures();
 build();
+
+// 恢复上次停留的页面
+let savedView = 'visual';
+try {
+  savedView = localStorage.getItem('algo-agent:view') || 'visual';
+} catch {
+  savedView = 'visual';
+}
+switchView(['visual', 'bind', 'data'].includes(savedView) ? savedView : 'visual');
 
 diagnosisView.show({
   result: diagnose('int a[10]; for (int i = 0; i <= n; i++) { a[i] = 0; }'),

@@ -6,8 +6,23 @@
 <title>算法学习智能体 · 原型 v0.1</title>
 <link rel="stylesheet" href="./src/styles.css">
 </head>
-<body>
+<body class="view-visual">
 <div class="app">
+  <nav class="rail" id="rail">
+    <button type="button" data-view="visual" class="active" title="可视化与六维评估">
+      <span class="rail-icon">◧</span>
+      <span class="rail-text">可视化</span>
+    </button>
+    <button type="button" data-view="bind" title="绑定洛谷账号">
+      <span class="rail-icon">⚿</span>
+      <span class="rail-text">绑定</span>
+    </button>
+    <button type="button" data-view="data" title="数据与初步评估">
+      <span class="rail-icon">▤</span>
+      <span class="rail-text">数据</span>
+    </button>
+  </nav>
+
   <header class="topbar">
     <div class="brand">
       <strong>算法学习智能体</strong>
@@ -77,36 +92,6 @@
         <ol id="history-list"></ol>
       </div>
     </details>
-
-    <details class="mycode" id="luogu">
-      <summary>洛谷账号绑定</summary>
-      <p class="mycode-hint">
-        登录洛谷 → 按 <b>F12</b> → <b>Network</b> → 刷新页面 → 点任意一条 <code>luogu.com.cn</code> 请求 →
-        右侧 <b>Request Headers</b> 里找到 <code>Cookie</code>，把 <code>__client_id=</code> 和 <code>_uid=</code> 等号后面的值分别填进来。<br />
-        ⚠️ Cookie 等同于登录态：只存在本机浏览器，只发给 127.0.0.1，不会上传。
-      </p>
-      <div class="cookie-fields">
-        <label>__client_id
-          <input id="cookie-client-id" spellcheck="false" placeholder="只要等号后面的值" />
-        </label>
-        <label>_uid
-          <input id="cookie-uid" inputmode="numeric" placeholder="你的数字 UID" />
-        </label>
-      </div>
-      <details class="cookie-extra">
-        <summary>还有别的 Cookie？整行粘这里（可选）</summary>
-        <textarea id="cookie-extra" spellcheck="false" placeholder="例如：__client_id=...; _uid=...; 其他名字=..."></textarea>
-      </details>
-
-      <div class="mycode-actions">
-        <button id="btn-save-cookie">保存绑定</button>
-        <button id="btn-sync-doing" class="primary">同步做题情况</button>
-        <button id="btn-analyze-profile" class="primary">分析个人情况</button>
-        <button id="btn-clear-cookie" class="link-btn">解绑</button>
-      </div>
-      <div id="cookie-status" class="muted"></div>
-      <div id="luogu-summary" class="luogu-summary"></div>
-    </details>
   </main>
 
   <aside class="panel right">
@@ -142,6 +127,46 @@
       <div id="diagnosis" class="diagnosis"></div>
     </section>
   </aside>
+
+  <section class="view" id="view-bind">
+    <h1>绑定洛谷账号</h1>
+    <p class="mycode-hint">
+      登录洛谷 → 按 <b>F12</b> → <b>Network</b> → 刷新页面 → 点任意一条 <code>luogu.com.cn</code> 请求 →
+      右侧 <b>Request Headers</b> 里找到 <code>Cookie</code>，把 <code>__client_id=</code> 和 <code>_uid=</code> 等号后面的值分别填进来。<br />
+      ⚠️ Cookie 等同于登录态：只存在本机浏览器，只发给 127.0.0.1，不会上传到任何服务器。
+    </p>
+    <div class="cookie-fields">
+      <label>__client_id
+        <input id="cookie-client-id" spellcheck="false" placeholder="只要等号后面的值" />
+      </label>
+      <label>_uid
+        <input id="cookie-uid" inputmode="numeric" placeholder="你的数字 UID" />
+      </label>
+    </div>
+    <details class="cookie-extra">
+      <summary>还有别的 Cookie？整行粘这里（可选）</summary>
+      <textarea id="cookie-extra" spellcheck="false" placeholder="例如：__client_id=...; _uid=...; 其他名字=..."></textarea>
+    </details>
+
+    <div class="mycode-actions">
+      <button id="btn-save-cookie" class="primary">保存绑定</button>
+      <button id="btn-clear-cookie" class="link-btn">解绑</button>
+      <span id="cookie-status" class="muted luogu-status"></span>
+    </div>
+
+    <p class="mycode-hint">绑定后去「数据」页同步做题记录。</p>
+  </section>
+
+  <section class="view" id="view-data">
+    <h1>数据与初步评估</h1>
+    <div class="mycode-actions">
+      <button id="btn-sync-doing" class="primary">同步做题情况</button>
+      <button id="btn-analyze-profile" class="primary">分析个人情况</button>
+      <span id="data-status" class="muted luogu-status"></span>
+    </div>
+
+    <div id="luogu-summary" class="luogu-summary"></div>
+  </section>
 </div>
 <script type="module" src="./src/app.js"></script>
 </body>
