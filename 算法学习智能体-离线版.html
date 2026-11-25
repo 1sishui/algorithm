@@ -533,6 +533,28 @@ details pre { margin-top: 6px; }
   font-size: 11.5px;
 }
 
+/* ---------- AI 诊断 ---------- */
+.ai-report {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.ai-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.ai-title { font-size: 12px; color: var(--muted); letter-spacing: .06em; }
+.auto-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+.ai-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ai-actions button { padding: 5px 12px; font-size: 12px; }
+#analyze-status { font-size: 11px; }
+#analyze-status.ok { color: #86efac; }
+#analyze-status.bad { color: #fcd34d; }
+.report-summary { font-size: 12.5px; line-height: 1.7; color: #cbd5e1; margin-bottom: 8px; }
+.report-block { margin-bottom: 8px; }
+.report-block h4 { margin: 0 0 4px; font-size: 11px; color: var(--muted); font-weight: 500; }
+.report-block ul { margin: 0; padding-left: 16px; font-size: 12px; line-height: 1.7; color: #b8c7db; }
+.report-block.good li { color: #86efac; }
+.report-block.bad li { color: #fcd34d; }
+.report-profile { font-size: 11.5px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; }
+
 </style>
 </head>
 <body>
@@ -641,6 +663,18 @@ details pre { margin-top: 6px; }
       <h2>理解度评估 <span class="badge">由运行记录推算</span></h2>
       <div id="mastery"></div>
       <div id="mastery-source" class="muted"></div>
+
+      <div class="ai-report">
+        <div class="ai-head">
+          <span class="ai-title">AI 诊断</span>
+          <label class="auto-toggle"><input type="checkbox" id="auto-analyze" checked /> 同步后自动分析</label>
+        </div>
+        <div class="ai-actions">
+          <button id="btn-analyze">立即分析</button>
+          <span id="analyze-status" class="muted"></span>
+        </div>
+        <div id="analyze-body"></div>
+      </div>
     </section>
     <section>
       <h2>下一步推荐</h2>
@@ -2728,6 +2762,220 @@ async function fetchRecordCode(id, cookie) {
 return { syncLuoguWithCookie, fetchRecordCode };
 })();
 
+/* ===== src/assessment/diff.js ===== */
+const __m_assessment_diff = (function () {
+/**
+ * 代码差异：比较同一道题的两次提交
+ *
+ * 只做「行为层面」的判断，不评判代码好坏：
+ *   - 改了几行、动了哪里
+ *   - 是小步修正，还是把逻辑整个换掉
+ *   - 和上一次相比相似度多少
+ *
+ * 用 LCS（最长公共子序列）算行级差异。行数超过上限时退化成“行集合相似度”，
+ * 避免 O(n²) 卡死浏览器。
+ */
+const MAX_LCS_LINES = 260;
+
+/** 归一化一行：去首尾空白、压缩空格，避免格式调整被算成改动 */
+function normalize(line) {
+  return String(line).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 模板代码行（头文件、using、main 壳、纯括号、return 0）不参与相似度计算。
+ * 否则两份完全不同的解法，会因为共享 #include 和 int main() 而显得“改得不多”。
+ */
+const TRIVIAL = [/^#include/, /^using namespace/, /^int main\s*\(/, /^[{}()\s;]*$/, /^return 0\s*;?$/];
+
+function isTrivial(line) {
+  return TRIVIAL.some((pattern) => pattern.test(line));
+}
+
+function lcsLength(a, b) {
+  const m = a.length;
+  const n = b.length;
+  let prev = new Array(n + 1).fill(0);
+  let curr = new Array(n + 1).fill(0);
+
+  for (let i = 1; i <= m; i += 1) {
+    for (let j = 1; j <= n; j += 1) {
+      curr[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], curr[j - 1]);
+    }
+    [prev, curr] = [curr, prev];
+    curr.fill(0);
+  }
+  return prev[n];
+}
+
+function setSimilarity(a, b) {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size === 0 && setB.size === 0) return 1;
+  let common = 0;
+  for (const item of setA) if (setB.has(item)) common += 1;
+  return (2 * common) / (setA.size + setB.size);
+}
+
+/**
+ * @param {string} before 上一次提交的代码
+ * @param {string} after  这一次提交的代码
+ * @returns {{similarity:number, added:number, removed:number, beforeLines:number, afterLines:number, level:'微调'|'局部修改'|'大改'|'重写'}}
+ */
+function compareCode(before, after) {
+  const rawA = String(before || '').split('\n').map(normalize).filter(Boolean);
+  const rawB = String(after || '').split('\n').map(normalize).filter(Boolean);
+
+  // 先去掉模板行；如果去完没东西了（比如只交了框架），就退回原始行
+  const trimmedA = rawA.filter((line) => !isTrivial(line));
+  const trimmedB = rawB.filter((line) => !isTrivial(line));
+  const a = trimmedA.length >= 2 ? trimmedA : rawA;
+  const b = trimmedB.length >= 2 ? trimmedB : rawB;
+
+  if (a.length === 0 || b.length === 0) {
+    return {
+      similarity: 0,
+      added: b.length,
+      removed: a.length,
+      beforeLines: a.length,
+      afterLines: b.length,
+      level: '重写'
+    };
+  }
+
+  let common;
+  if (a.length <= MAX_LCS_LINES && b.length <= MAX_LCS_LINES) {
+    common = lcsLength(a, b);
+  } else {
+    common = setSimilarity(a, b) * ((a.length + b.length) / 2);
+  }
+
+  const similarity = (2 * common) / (a.length + b.length);
+  const added = Math.max(0, b.length - common);
+  const removed = Math.max(0, a.length - common);
+
+  let level;
+  if (similarity >= 0.9) level = '微调';
+  else if (similarity >= 0.65) level = '局部修改';
+  else if (similarity >= 0.35) level = '大改';
+  else level = '重写';
+
+  return {
+    similarity: Number(similarity.toFixed(3)),
+    added: Math.round(added),
+    removed: Math.round(removed),
+    beforeLines: a.length,
+    afterLines: b.length,
+    level
+  };
+}
+return { compareCode };
+})();
+
+/* ===== src/assessment/correction.js ===== */
+const __m_assessment_correction = (function () {
+/**
+ * 错误修正质量分析：不只看“提交了几次”，还看“每次改了什么”
+ *
+ * 需要每次提交的代码。有代码时：
+ *   - 逐次比较相邻两次提交（行级相似度）
+ *   - 区分「微调 / 局部修改 / 大改 / 重写」
+ *   - 用“时间间隔极短 + 整段重写”识别疑似粘贴题解
+ *   - 用“小步修改占比”判断是否改到了点上
+ *
+ * 没有代码时退回只看提交次数的口径（见 submissions.js）。
+ *
+ * 申明：这些都是行为推断，不是“他一定抄了/一定懂了”的结论。
+ */
+const { compareCode } = __m_assessment_diff;
+
+const SUSPECT_GAP_SECONDS = 90;
+
+/**
+ * @param {Array<{code?:string, accepted:boolean, status?:string, submittedAt?:string}>} attempts 按时间升序
+ */
+function analyzeCorrection(attempts) {
+  const list = Array.isArray(attempts) ? attempts.filter(Boolean) : [];
+  if (list.length === 0) return null;
+
+  const accepted = list[list.length - 1].accepted === true;
+  const baseScore = accepted ? 100 * Math.pow(0.85, list.length - 1) : 0;
+
+  const transitions = [];
+  for (let i = 1; i < list.length; i += 1) {
+    const before = list[i - 1];
+    const after = list[i];
+    if (!before.code || !after.code) continue;
+
+    const diff = compareCode(before.code, after.code);
+    const gapSeconds =
+      before.submittedAt && after.submittedAt
+        ? Math.max(0, (new Date(after.submittedAt) - new Date(before.submittedAt)) / 1000)
+        : null;
+
+    transitions.push({
+      ...diff,
+      gapSeconds,
+      suspectedPaste:
+        gapSeconds !== null && gapSeconds <= SUSPECT_GAP_SECONDS && diff.level === '重写'
+    });
+  }
+
+  const withCode = transitions.length > 0;
+  const smallEdits = transitions.filter((t) => t.similarity >= 0.65).length;
+  const rewrites = transitions.filter((t) => t.level === '重写').length;
+  const suspected = transitions.filter((t) => t.suspectedPaste).length;
+
+  const targetedRatio = withCode ? smallEdits / transitions.length : null;
+  const avgSimilarity = withCode
+    ? transitions.reduce((sum, t) => sum + t.similarity, 0) / transitions.length
+    : null;
+
+  // 有代码时才做质量加权；没代码就是纯次数口径
+  let score = baseScore;
+  if (withCode) {
+    const quality = 0.6 + 0.4 * targetedRatio; // 小步修改越多，说明越接近“找到问题再改”
+    const penalty = suspected > 0 ? 0.7 : 1; // 疑似整段粘贴，打折
+    score = baseScore * quality * penalty;
+  }
+
+  return {
+    score: Math.round(Math.max(0, Math.min(100, score))),
+    attempts: list.length,
+    accepted,
+    withCode,
+    transitions: transitions.length,
+    smallEdits,
+    rewrites,
+    suspected,
+    targetedRatio,
+    avgSimilarity,
+    detail: describe({ list, withCode, transitions: transitions.length, smallEdits, rewrites, suspected, targetedRatio, avgSimilarity })
+  };
+}
+
+function describe({ list, withCode, transitions, smallEdits, rewrites, suspected, targetedRatio, avgSimilarity }) {
+  const head = `${list.length} 次提交${list[list.length - 1].accepted ? '，最后一次通过' : '，最终没通过'}`;
+
+  if (!withCode) {
+    return `${head}；没有可比对的代码，按提交次数折算`;
+  }
+
+  const parts = [
+    head,
+    `可比对 ${transitions} 次修改`,
+    `小步改 ${smallEdits} 次`,
+    rewrites > 0 ? `整段重写 ${rewrites} 次` : null,
+    suspected > 0 ? `疑似直接粘贴 ${suspected} 次` : null,
+    `平均相似度 ${(avgSimilarity * 100).toFixed(0)}%`,
+    `小步修改占比 ${(targetedRatio * 100).toFixed(0)}%`
+  ].filter(Boolean);
+
+  return parts.join('；');
+}
+return { analyzeCorrection };
+})();
+
 /* ===== src/assessment/submissions.js ===== */
 const __m_assessment_submissions = (function () {
 /**
@@ -2919,6 +3167,77 @@ function computeSubmissionFeatures(records) {
   return { dims, sample: list.length, problems: problems.length, source: '洛谷' };
 }
 return { groupByProblem, computeSubmissionFeatures };
+})();
+
+/* ===== src/agent/report.js ===== */
+const __m_agent_report = (function () {
+/**
+ * AI 诊断：把六维数字交给大模型，让它写一份人话诊断
+ *
+ * 分工很明确：
+ *   - 数字由本地规则算（可复现、可解释）
+ *   - 解读由模型写（它能说“这说明什么、接下来练什么”，规则写不出这种话）
+ */
+const ENDPOINT = '/api/analyze';
+const TIMEOUT = 30000;
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+async function requestAnalysis(dims, stats) {
+  if (typeof location !== 'undefined' && location.protocol === 'file:') {
+    return { ok: false, reason: 'offline_file' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT);
+
+  try {
+    const response = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dims, stats }),
+      signal: controller.signal
+    });
+
+    if (response.status === 404 || response.status === 501) {
+      return { ok: false, reason: 'stale_server', message: '当前服务是旧版本，请重启 启动.bat' };
+    }
+
+    const data = await response.json();
+    if (!data || !data.ok) {
+      return { ok: false, reason: (data && data.reason) || 'unknown', message: (data && data.message) || '' };
+    }
+    return { ok: true, result: data.result, meta: data.meta || {} };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error.name === 'AbortError' ? 'timeout' : 'network',
+      message: error.name === 'AbortError' ? '模型响应超时' : '连不上本地服务'
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function renderReport(container, report) {
+  const list = (items, cls) =>
+    items && items.length
+      ? `<div class="report-block ${cls}"><h4>${cls === 'good' ? '优势' : cls === 'bad' ? '短板' : '建议'}</h4><ul>${items
+          .map((item) => `<li>${escapeHtml(item)}</li>`)
+          .join('')}</ul></div>`
+      : '';
+
+  container.innerHTML = `
+    ${report.summary ? `<div class="report-summary">${escapeHtml(report.summary)}</div>` : ''}
+    ${list(report.strengths, 'good')}
+    ${list(report.weaknesses, 'bad')}
+    ${list(report.suggestions, 'plain')}
+    ${report.correctionProfile ? `<div class="report-profile">纠错风格：${escapeHtml(report.correctionProfile)}</div>` : ''}
+  `;
+}
+return { requestAnalysis, renderReport };
 })();
 
 /* ===== src/ui/diagnosisPanel.js ===== */
@@ -3251,6 +3570,7 @@ const { computeFeatures } = __m_assessment_features;
 const { computeSubmissionFeatures } = __m_assessment_submissions;
 const { normalizeRecords, summarizeSubmissions, difficultyLabel } = __m_import_luogu;
 const { syncLuoguWithCookie, fetchRecordCode } = __m_import_luoguClient;
+const { requestAnalysis, renderReport } = __m_agent_report;
 const { pushRecord, loadRecords, saveRecords, clearAll, summarize, serialize, describe, groupBy } = __m_user_history;
 
 const $ = (id) => document.getElementById(id);
@@ -3307,7 +3627,11 @@ const el = {
   syncLuoguBtn: $('btn-sync-luogu'),
   clearCookie: $('btn-clear-cookie'),
   fetchCode: $('btn-fetch-code'),
-  cookieStatus: $('cookie-status')
+  cookieStatus: $('cookie-status'),
+  autoAnalyze: $('auto-analyze'),
+  analyzeBtn: $('btn-analyze'),
+  analyzeStatus: $('analyze-status'),
+  analyzeBody: $('analyze-body')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -3333,6 +3657,9 @@ const catalog = algorithms.map((algo) => ({
   category: categoryOfKp(algo.kp) || '未分类'
 }));
 
+let lastDims = null;
+let lastStats = null;
+
 function refreshFeatures() {
   const runResult = computeFeatures(runs, catalog);
   const subResult = computeSubmissionFeatures(submissions);
@@ -3345,7 +3672,13 @@ function refreshFeatures() {
   }
 
   mastery.render(dims);
-
+  lastDims = dims;
+  lastStats = {
+    submissions: subResult ? subResult.sample : 0,
+    problems: subResult ? subResult.problems : 0,
+    runs: runResult.sample,
+    sessions: runResult.sessions
+  };
   const parts = [];
   if (subResult && subResult.sample) parts.push(`${subResult.sample} 条洛谷提交`);
   if (runResult.sample) parts.push(`${runResult.sample} 条运行记录`);
@@ -3684,6 +4017,74 @@ el.exportRuns.addEventListener('click', () => {
   URL.revokeObjectURL(url);
 });
 
+/* ---------------- AI 诊断 ---------------- */
+
+const AUTO_KEY = 'algo-agent:auto-analyze';
+let autoAnalyze = true;
+try {
+  autoAnalyze = localStorage.getItem(AUTO_KEY) !== '0';
+} catch {
+  autoAnalyze = true;
+}
+el.autoAnalyze.checked = autoAnalyze;
+
+let analyzing = false;
+
+function setAnalyzeStatus(text, kind) {
+  el.analyzeStatus.textContent = text;
+  el.analyzeStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+}
+
+async function runAnalysis({ quiet = false } = {}) {
+  if (analyzing) return;
+  if (!lastDims) {
+    setAnalyzeStatus('还没有可分析的数据', 'bad');
+    return;
+  }
+
+  const dims = {};
+  for (const [key, item] of Object.entries(lastDims)) {
+    dims[key] = item && item.value != null ? Math.round(item.value) : null;
+  }
+
+  analyzing = true;
+  if (!quiet) setAnalyzeStatus('模型分析中…', 'muted');
+  el.analyzeBtn.disabled = true;
+
+  const response = await requestAnalysis(dims, lastStats || {});
+
+  analyzing = false;
+  el.analyzeBtn.disabled = false;
+
+  if (!response.ok) {
+    const reason = response.reason || '';
+    const hint =
+      reason === 'offline_file'
+        ? '离线版不连模型'
+        : reason === 'no_api_key'
+          ? '服务端没配 key'
+          : reason === 'timeout'
+            ? '模型超时'
+            : response.message || '分析失败';
+    setAnalyzeStatus(hint, 'bad');
+    return;
+  }
+
+  renderReport(el.analyzeBody, response.result);
+  setAnalyzeStatus('已更新', 'ok');
+}
+
+el.analyzeBtn.addEventListener('click', () => runAnalysis());
+
+el.autoAnalyze.addEventListener('change', () => {
+  autoAnalyze = el.autoAnalyze.checked;
+  try {
+    localStorage.setItem(AUTO_KEY, autoAnalyze ? '1' : '0');
+  } catch {
+    /* 忽略 */
+  }
+});
+
 el.clearRuns.addEventListener('click', () => {
   clearAll(localStorage);
   runs = [];
@@ -3841,6 +4242,8 @@ async function syncLuoguNow({ full = false, quiet = false } = {}) {
 
   const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   setCookieStatus(`已同步 ${normalized.length} 条 · ${time}`, 'ok');
+
+  if (autoAnalyze && normalized.length > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 }
 
 el.saveCookie.addEventListener('click', () => syncLuoguNow({ full: true }));
@@ -3897,6 +4300,8 @@ el.fetchCode.addEventListener('click', async () => {
   saveSubmissions();
   refreshFeatures();
   setCookieStatus(`已抓取 ${ok} 段代码，六维已重新计算`, 'ok');
+
+  if (autoAnalyze && ok > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 });
 el.syncLuoguBtn.addEventListener('click', () => syncLuoguNow({ full: false }));
 

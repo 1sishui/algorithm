@@ -112,6 +112,18 @@
       <h2>理解度评估 <span class="badge">由运行记录推算</span></h2>
       <div id="mastery"></div>
       <div id="mastery-source" class="muted"></div>
+
+      <div class="ai-report">
+        <div class="ai-head">
+          <span class="ai-title">AI 诊断</span>
+          <label class="auto-toggle"><input type="checkbox" id="auto-analyze" checked /> 同步后自动分析</label>
+        </div>
+        <div class="ai-actions">
+          <button id="btn-analyze">立即分析</button>
+          <span id="analyze-status" class="muted"></span>
+        </div>
+        <div id="analyze-body"></div>
+      </div>
     </section>
     <section>
       <h2>下一步推荐</h2>

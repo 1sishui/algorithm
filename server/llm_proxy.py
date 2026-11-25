@@ -341,3 +341,96 @@ def handle(payload, client_ip="local"):
         "result": result,
         "meta": {"model": model, "latency_ms": int((time.time() - started) * 1000), "cached": False},
     }
+
+ANALYZE_PROMPT = """你是算法学习分析师。用户给了你一份基于真实刷题/练习记录算出的六维评分和统计。
+
+请写一份诊断，只输出一个 JSON 对象，不要 Markdown、不要多余文字：
+{
+  "summary": "两句话概括当前水平与主要问题，必须引用具体数字",
+  "strengths": ["最多 3 条，每条不超过 30 字，必须对应某个维度的数字"],
+  "weaknesses": ["最多 3 条，每条不超过 30 字，指出具体短板和可能原因"],
+  "suggestions": ["最多 3 条，每条不超过 30 字，要具体可执行，例如练哪个难度区间的题"],
+  "correctionProfile": "一句话描述他的纠错风格（小步调试 / 频繁重写 / 一次通过等），没有代码数据就写“证据不足”"
+}
+
+要求：
+1. 只依据给出的数字，不要编造没有的数据。
+2. 分数为 null 的维度视为“数据不足”，不要据此下结论。
+3. 语气像教练，不说空话，不给“多练习”这种废话。
+"""
+
+
+def handle_analyze(payload, client_ip="local"):
+    """六维分析：把数字交给大模型，让它写诊断报告。"""
+    import hashlib
+
+    dims = payload.get("dims") or {}
+    stats = payload.get("stats") or {}
+
+    if not dims:
+        return 400, {"ok": False, "reason": "empty", "message": "没有可分析的数据"}
+
+    if rate_limited(client_ip):
+        return 429, {"ok": False, "reason": "rate_limited", "message": "调用太频繁，休息一会儿再试"}
+
+    if setting("LLM_MOCK") == "1":
+        return 200, {
+            "ok": True,
+            "result": {
+                "summary": "（模拟）六维中错误修正 68 分、覆盖均衡 54 分，说明能改对但练得偏窄。",
+                "strengths": ["错误修正 68：出错后多数能自己改对"],
+                "weaknesses": ["覆盖均衡 54：集中在两三个难度层"],
+                "suggestions": ["每周挑 2 道提高+ 的题，逼自己跨难度"],
+                "correctionProfile": "以小步调试为主，偶尔整段重写"
+            },
+            "meta": {"model": "mock", "latency_ms": 0, "cached": False},
+        }
+
+    key = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    cached = _cache.get(key)
+    if cached and time.time() - cached[0] < CACHE_TTL:
+        return 200, {"ok": True, "result": cached[1], "meta": {"model": setting("LLM_MODEL", "deepseek-chat"), "latency_ms": 0, "cached": True}}
+
+    if not setting("LLM_API_KEY"):
+        return 200, {"ok": False, "reason": "no_api_key", "message": "服务端还没有配置模型 key"}
+
+    user_text = json.dumps({"dims": dims, "stats": stats}, ensure_ascii=False)[:4000]
+    messages = [
+        {"role": "system", "content": ANALYZE_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
+
+    started = time.time()
+    try:
+        content, model = call_model(messages)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "ignore")[:300]
+        return 502, {"ok": False, "reason": "upstream_error", "message": f"模型接口返回 {exc.code}", "detail": detail}
+    except urllib.error.URLError as exc:
+        return 502, {"ok": False, "reason": "network_error", "message": f"连不上模型接口：{exc.reason}"}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"ok": False, "reason": "unknown_error", "message": str(exc)[:200]}
+
+    data = parse_model_output(content)
+    if not isinstance(data, dict):
+        return 502, {"ok": False, "reason": "bad_output", "message": "模型返回的内容无法解析"}
+
+    def as_list(value, limit=3):
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip()[:80] for item in value if str(item).strip()][:limit]
+
+    result = {
+        "summary": str(data.get("summary", "")).strip()[:200],
+        "strengths": as_list(data.get("strengths")),
+        "weaknesses": as_list(data.get("weaknesses")),
+        "suggestions": as_list(data.get("suggestions")),
+        "correctionProfile": str(data.get("correctionProfile", "")).strip()[:120],
+    }
+
+    _cache[key] = (time.time(), result)
+    return 200, {
+        "ok": True,
+        "result": result,
+        "meta": {"model": model, "latency_ms": int((time.time() - started) * 1000), "cached": False},
+    }

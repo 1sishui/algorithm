@@ -21,6 +21,7 @@ import { computeFeatures } from './assessment/features.js';
 import { computeSubmissionFeatures } from './assessment/submissions.js';
 import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './import/luogu.js';
 import { syncLuoguWithCookie, fetchRecordCode } from './import/luoguClient.js';
+import { requestAnalysis, renderReport } from './agent/report.js';
 import {
   pushRecord,
   loadRecords,
@@ -86,7 +87,11 @@ const el = {
   syncLuoguBtn: $('btn-sync-luogu'),
   clearCookie: $('btn-clear-cookie'),
   fetchCode: $('btn-fetch-code'),
-  cookieStatus: $('cookie-status')
+  cookieStatus: $('cookie-status'),
+  autoAnalyze: $('auto-analyze'),
+  analyzeBtn: $('btn-analyze'),
+  analyzeStatus: $('analyze-status'),
+  analyzeBody: $('analyze-body')
 };
 
 /** 下拉框里的“我的代码”入口 */
@@ -112,6 +117,9 @@ const catalog = algorithms.map((algo) => ({
   category: categoryOfKp(algo.kp) || '未分类'
 }));
 
+let lastDims = null;
+let lastStats = null;
+
 function refreshFeatures() {
   const runResult = computeFeatures(runs, catalog);
   const subResult = computeSubmissionFeatures(submissions);
@@ -124,7 +132,13 @@ function refreshFeatures() {
   }
 
   mastery.render(dims);
-
+  lastDims = dims;
+  lastStats = {
+    submissions: subResult ? subResult.sample : 0,
+    problems: subResult ? subResult.problems : 0,
+    runs: runResult.sample,
+    sessions: runResult.sessions
+  };
   const parts = [];
   if (subResult && subResult.sample) parts.push(`${subResult.sample} 条洛谷提交`);
   if (runResult.sample) parts.push(`${runResult.sample} 条运行记录`);
@@ -463,6 +477,74 @@ el.exportRuns.addEventListener('click', () => {
   URL.revokeObjectURL(url);
 });
 
+/* ---------------- AI 诊断 ---------------- */
+
+const AUTO_KEY = 'algo-agent:auto-analyze';
+let autoAnalyze = true;
+try {
+  autoAnalyze = localStorage.getItem(AUTO_KEY) !== '0';
+} catch {
+  autoAnalyze = true;
+}
+el.autoAnalyze.checked = autoAnalyze;
+
+let analyzing = false;
+
+function setAnalyzeStatus(text, kind) {
+  el.analyzeStatus.textContent = text;
+  el.analyzeStatus.className = kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : 'muted';
+}
+
+async function runAnalysis({ quiet = false } = {}) {
+  if (analyzing) return;
+  if (!lastDims) {
+    setAnalyzeStatus('还没有可分析的数据', 'bad');
+    return;
+  }
+
+  const dims = {};
+  for (const [key, item] of Object.entries(lastDims)) {
+    dims[key] = item && item.value != null ? Math.round(item.value) : null;
+  }
+
+  analyzing = true;
+  if (!quiet) setAnalyzeStatus('模型分析中…', 'muted');
+  el.analyzeBtn.disabled = true;
+
+  const response = await requestAnalysis(dims, lastStats || {});
+
+  analyzing = false;
+  el.analyzeBtn.disabled = false;
+
+  if (!response.ok) {
+    const reason = response.reason || '';
+    const hint =
+      reason === 'offline_file'
+        ? '离线版不连模型'
+        : reason === 'no_api_key'
+          ? '服务端没配 key'
+          : reason === 'timeout'
+            ? '模型超时'
+            : response.message || '分析失败';
+    setAnalyzeStatus(hint, 'bad');
+    return;
+  }
+
+  renderReport(el.analyzeBody, response.result);
+  setAnalyzeStatus('已更新', 'ok');
+}
+
+el.analyzeBtn.addEventListener('click', () => runAnalysis());
+
+el.autoAnalyze.addEventListener('change', () => {
+  autoAnalyze = el.autoAnalyze.checked;
+  try {
+    localStorage.setItem(AUTO_KEY, autoAnalyze ? '1' : '0');
+  } catch {
+    /* 忽略 */
+  }
+});
+
 el.clearRuns.addEventListener('click', () => {
   clearAll(localStorage);
   runs = [];
@@ -620,6 +702,8 @@ async function syncLuoguNow({ full = false, quiet = false } = {}) {
 
   const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   setCookieStatus(`已同步 ${normalized.length} 条 · ${time}`, 'ok');
+
+  if (autoAnalyze && normalized.length > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 }
 
 el.saveCookie.addEventListener('click', () => syncLuoguNow({ full: true }));
@@ -676,6 +760,8 @@ el.fetchCode.addEventListener('click', async () => {
   saveSubmissions();
   refreshFeatures();
   setCookieStatus(`已抓取 ${ok} 段代码，六维已重新计算`, 'ok');
+
+  if (autoAnalyze && ok > 0) setTimeout(() => runAnalysis({ quiet: true }), 400);
 });
 el.syncLuoguBtn.addEventListener('click', () => syncLuoguNow({ full: false }));
 
