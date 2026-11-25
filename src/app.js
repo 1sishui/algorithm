@@ -705,14 +705,26 @@ function renderLuoguSummary() {
   const taggedCount = allPids.filter((pid) => (pidTags[pid] || []).length > 0).length;
   const algoList = [...algoMap.entries()].sort((a, b) => b[1].total - a[1].total).slice(0, 8);
   const algoMax = Math.max(...algoList.map(([, value]) => value.total), 1);
-  const algoRows = algoList.map(
-    ([tag, value]) => `
-      <div class="diff-row">
-        <span class="lvl">${escapeText(tag)}</span>
-        <span class="track"><span class="fill" style="width:${Math.round((value.total / algoMax) * 100)}%"></span></span>
-        <span class="cnt">${value.total}<span class="sub">通${value.solved}</span></span>
-      </div>`
-  );
+
+  // 算法柱：跟难度柱同一套结构，标签太长就省略（悬停看全名）
+  const algoBars = algoList
+    .map(([tag, value]) => {
+      const height = Math.round((value.total / algoMax) * 100);
+      const solvedShare = value.total ? (value.solved / value.total) * 100 : 0;
+      const short = tag.length > 6 ? `${tag.slice(0, 6)}…` : tag;
+      return `
+        <div class="diff-col" data-label="${escapeText(tag)}" data-total="${value.total}" data-solved="${value.solved}">
+          <div class="diff-stack" style="height:${height}%">
+            <div class="seg unsolved" style="height:${100 - solvedShare}%"></div>
+            <div class="seg solved" style="height:${solvedShare}%"></div>
+          </div>
+          <div class="diff-label" title="${escapeText(tag)}">${escapeText(short)}</div>
+          <div class="diff-num">${value.total}</div>
+        </div>`;
+    })
+    .join('');
+
+  const chartMode = el.luoguSummary.dataset.chartMode === 'tag' ? 'tag' : 'difficulty';
 
   el.luoguSummary.innerHTML = `
     <div class="luogu-stats">
@@ -722,24 +734,57 @@ function renderLuoguSummary() {
       <span>通过率 <b>${(stats.acceptRate * 100).toFixed(0)}%</b></span>
       <span>标签覆盖 <b>${taggedCount}/${stats.problems}</b></span>
     </div>
-    <div class="luogu-subtitle">难度分布（合计 ${problemInfo.size} 道 · 绿=已通过，灰=未通过）</div>
-    <div class="diff-chart">${bars}</div>
-    ${
-      algoRows.length
-        ? `<div class="luogu-subtitle">算法分布（合计 ${taggedCount} 道，括号内为已通过数）</div><div class="diff-bars">${algoRows.join('')}</div>`
-        : `<div class="algo-empty">${
-            taggedCount === 0
-              ? '还没有题目标签，点「同步做题情况」会自动抓取。'
-              : '已抓取的题目里都没有算法标签（多为未评定题目）。'
-          }</div>`
-    }`;
 
-  // 悬停提示：显示这一刻度的通过/未通过数量
+    <div class="chart-switch">
+      <div class="segmented" role="tablist">
+        <button type="button" data-mode="difficulty" class="${chartMode === 'difficulty' ? 'active' : ''}">按难度</button>
+        <button type="button" data-mode="tag" class="${chartMode === 'tag' ? 'active' : ''}">按算法</button>
+      </div>
+      <span class="chart-hint">绿=已通过，灰=未通过 · 悬停看数量</span>
+    </div>
+
+    <div class="chart-stage">
+      <div class="chart-panel ${chartMode === 'difficulty' ? 'active' : ''}" data-panel="difficulty">
+        <div class="luogu-subtitle">难度分布 · 合计 ${problemInfo.size} 道</div>
+        <div class="diff-chart">${bars}</div>
+      </div>
+      <div class="chart-panel ${chartMode === 'tag' ? 'active' : ''}" data-panel="tag">
+        ${
+          algoBars
+            ? `<div class="luogu-subtitle">算法分布 · 合计 ${taggedCount} 道</div><div class="diff-chart">${algoBars}</div>`
+            : `<div class="algo-empty">${
+                taggedCount === 0
+                  ? '还没有题目标签，点「同步做题情况」会自动抓取。'
+                  : '已抓取的题目里都没有算法标签（多为未评定题目）。'
+              }</div>`
+        }
+      </div>
+    </div>`;
+
+  el.luoguSummary.dataset.chartMode = chartMode;
+
+  // 切换两个图：淡出 / 淡入
+  el.luoguSummary.querySelectorAll('.segmented button').forEach((button) => {
+    button.addEventListener('click', () => {
+      const mode = button.dataset.mode;
+      el.luoguSummary.dataset.chartMode = mode;
+
+      el.luoguSummary.querySelectorAll('.segmented button').forEach((item) => {
+        item.classList.toggle('active', item === button);
+      });
+      el.luoguSummary.querySelectorAll('.chart-panel').forEach((panel) => {
+        panel.classList.toggle('active', panel.dataset.panel === mode);
+      });
+    });
+  });
+
+  // 悬停提示：显示每一档的通过 / 未通过数量
   el.luoguSummary.querySelectorAll('.diff-col').forEach((col) => {
     col.addEventListener('mousemove', (event) => {
       const total = Number(col.dataset.total);
       const solved = Number(col.dataset.solved);
-      showChartTip(event, `通过 ${solved} 道 · 未通过 ${total - solved} 道 · 共 ${total} 道`);
+      const label = col.dataset.label ? `${col.dataset.label} · ` : '';
+      showChartTip(event, `${label}通过 ${solved} 道 · 未通过 ${total - solved} 道 · 共 ${total} 道`);
     });
     col.addEventListener('mouseleave', hideChartTip);
   });

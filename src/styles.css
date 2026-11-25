@@ -631,3 +631,54 @@ details pre { margin-top: 6px; }
   white-space: nowrap;
   box-shadow: 0 4px 12px rgba(0, 0, 0, .4);
 }
+
+/* ---------- 图表切换 ---------- */
+.chart-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 8px;
+  flex-wrap: wrap;
+}
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.segmented button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: color .2s, background .2s;
+}
+.segmented button.active {
+  background: rgba(56, 189, 248, .15);
+  color: var(--blue);
+}
+.chart-hint { font-size: 11px; color: var(--muted); }
+
+.chart-stage { position: relative; min-height: 232px; }
+.chart-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity .25s ease, transform .25s ease;
+  pointer-events: none;
+}
+.chart-panel.active {
+  position: relative;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.chart-panel .diff-chart { height: 190px; }
