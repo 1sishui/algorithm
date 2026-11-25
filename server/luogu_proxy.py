@@ -392,3 +392,70 @@ def fetch_problem_tags(pid, cookie="", timeout=15):
         "tags": tags[:8],
         "categories": categories[:5],
     }
+
+def _name_to_id():
+    mapping = _tag_map()
+    result = {}
+    for tag_id, info in mapping.items():
+        name = (info.get("name") or "").strip()
+        if name and info.get("type") == 2 and name not in result:
+            result[name] = tag_id
+    return result
+
+
+def recommend_problems(tag_names, difficulty=None, exclude=None, limit=5, timeout=15):
+    """
+    按标签名 + 难度找题：给薄弱算法推荐难度合适的题目。
+    tag_names 按优先级排列，逐个尝试，凑够 limit 就停。
+    """
+    names = [str(n).strip() for n in (tag_names or []) if str(n).strip()]
+    if not names:
+        return 400, {"ok": False, "reason": "no_tags", "message": "没有可用的标签"}
+
+    exclude_set = {str(p) for p in (exclude or [])}
+    name_to_id = _name_to_id()
+    collected = []
+    used_tags = []
+
+    for name in names:
+        tag_id = name_to_id.get(name)
+        if tag_id is None:
+            continue
+
+        url = f"{LUOGU_BASE}/problem/list?tag={tag_id}&page=1&_contentOnly=1"
+        if difficulty is not None:
+            url += f"&difficulty={int(difficulty)}"
+
+        try:
+            _status, text, _ctype, _final = _get(url, accept="application/json", ajax=True, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            continue
+
+        data = _parse_payload(text)
+        if not data:
+            continue
+        items = ((data.get("currentData") or {}).get("problems") or {}).get("result") or []
+
+        for item in items:
+            pid = str(item.get("pid") or "")
+            if not pid or pid in exclude_set:
+                continue
+            if any(existing["pid"] == pid for existing in collected):
+                continue
+            collected.append(
+                {
+                    "pid": pid,
+                    "name": item.get("name") or "",
+                    "difficulty": item.get("difficulty"),
+                    "tag": name,
+                }
+            )
+            if len(collected) >= limit:
+                break
+
+        if collected:
+            used_tags.append(name)
+        if len(collected) >= limit:
+            break
+
+    return 200, {"ok": True, "problems": collected, "tags": used_tags}

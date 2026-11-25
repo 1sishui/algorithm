@@ -682,3 +682,39 @@ details pre { margin-top: 6px; }
   pointer-events: auto;
 }
 .chart-panel .diff-chart { height: 190px; }
+
+/* ---------- 算法诊断 ---------- */
+.verdict { margin-top: 14px; }
+.verdict-list { display: flex; flex-direction: column; gap: 5px; }
+.verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .02);
+}
+.verdict-row .v-name { width: 92px; flex: none; color: var(--text); }
+.verdict-row .v-tag {
+  flex: none;
+  width: 20px;
+  text-align: center;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 0 4px;
+}
+.verdict-row.level-强 .v-tag { background: rgba(34, 197, 94, .18); color: #86efac; }
+.verdict-row.level-中 .v-tag { background: rgba(148, 163, 184, .18); color: #cbd5e1; }
+.verdict-row.level-弱 .v-tag { background: rgba(245, 158, 11, .18); color: #fcd34d; }
+.verdict-row .v-num { font-variant-numeric: tabular-nums; }
+.verdict-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.verdict-actions button { padding: 5px 12px; font-size: 12px; }
+#recommend-status.ok { color: #86efac; }
+#recommend-status.bad { color: #fcd34d; }
+.recommend-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.rec-item { font-size: 12px; line-height: 1.6; }
+.rec-link { color: var(--blue); text-decoration: none; }
+.rec-link:hover { text-decoration: underline; }
+.rec-meta { display: block; color: var(--muted); font-size: 11px; }

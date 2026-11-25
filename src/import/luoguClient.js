@@ -104,3 +104,19 @@ export async function fetchProblemTags(pid, cookie) {
     return { ok: false, message: '连不上本地服务' };
   }
 }
+/** 按标签 + 难度找题：给薄弱算法推荐练习 */
+export async function recommendProblems(tags, difficulty, exclude) {
+  try {
+    const response = await fetch('/api/luogu/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags, difficulty, exclude }),
+    });
+    if (response.status === 404 || response.status === 501) {
+      return { ok: false, message: '当前服务是旧版本，请重启 启动.bat' };
+    }
+    return await response.json();
+  } catch {
+    return { ok: false, message: '连不上本地服务' };
+  }
+}

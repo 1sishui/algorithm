@@ -21,6 +21,7 @@ import { computeFeatures } from './assessment/features.js';
 import { computeSubmissionFeatures } from './assessment/submissions.js';
 import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './import/luogu.js';
 import { categoriesOfTags } from './knowledge/tagCategories.js';
+import { buildCategoryStats, renderVerdict } from './ui/verdict.js';
 import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
 import { requestAnalysis, renderReport } from './agent/report.js';
 import { classifyCodes } from './agent/codeTags.js';
@@ -714,7 +715,13 @@ function renderLuoguSummary() {
   }
 
   const taggedCount = allPids.filter((pid) => tagEntry(pid).tags.length > 0).length;
-  const algoList = [...algoMap.entries()].sort((a, b) => b[1].total - a[1].total).slice(0, 8);
+  const algoList = [...algoMap.entries()]
+    .sort((a, b) => {
+      if (a[0] === '其他') return 1;
+      if (b[0] === '其他') return -1;
+      return b[1].total - a[1].total;
+    })
+    .slice(0, 12);
   const algoMax = Math.max(...algoList.map(([, value]) => value.total), 1);
 
   // 算法柱：跟难度柱同一套结构，标签太长就省略（悬停看全名）
@@ -773,6 +780,10 @@ function renderLuoguSummary() {
     </div>`;
 
   el.luoguSummary.dataset.chartMode = chartMode;
+
+  // 算法诊断 + 薄弱算法推荐
+  const categoryStats = buildCategoryStats(submissions, pidTags, tagEntry);
+  renderVerdict(el.luoguSummary, categoryStats, submissions);
 
   // 切换两个图：淡出 / 淡入
   el.luoguSummary.querySelectorAll('.segmented button').forEach((button) => {
