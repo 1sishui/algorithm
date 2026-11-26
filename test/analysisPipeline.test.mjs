@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildPlan,
   classifyQueue,
+  countTagProgress,
   createJob,
   createJobStore,
   currentStepId,
@@ -15,6 +16,7 @@ import {
   normalizeTagEntry,
   pickCodeTargets,
   stepPercent,
+  TAG_RETRY_MS,
   tagNeedsFetch,
   updateStep
 } from '../src/agent/analysisPipeline.js';
@@ -30,6 +32,39 @@ assert.equal(normalizeTagEntry({ tags: ['图论'] }).checked, true, '有标签�
 assert.equal(tagNeedsFetch(undefined), true);
 assert.equal(tagNeedsFetch({ tags: [], checked: true }), false);
 assert.equal(tagNeedsFetch(['模拟']), false);
+
+/* ---------- 抓不到的标签：跳过 12 小时，别每次都卡住 ---------- */
+
+const failedEntry = { tags: [], categories: [], checked: false, failedAt: 1000, failReason: 'no_data' };
+assert.equal(tagNeedsFetch(failedEntry, 1000 + 60 * 60 * 1000), false, '12 小时内不重试');
+assert.equal(tagNeedsFetch(failedEntry, 1000 + TAG_RETRY_MS - 1), false);
+assert.equal(tagNeedsFetch(failedEntry, 1000 + TAG_RETRY_MS + 1), true, '超过 12 小时再试');
+assert.equal(tagNeedsFetch({ ...failedEntry, checked: true }, 1000), false, '已经查到的优先');
+
+const tagProgress = countTagProgress(
+  {
+    A: { tags: ['模拟'], categories: ['基础算法'], checked: true },
+    B: failedEntry,
+    C: { tags: [], categories: [], checked: true }
+  },
+  ['A', 'B', 'C', 'D'],
+  2000
+);
+assert.equal(tagProgress.total, 4);
+assert.equal(tagProgress.checked, 3, '查到 + 暂时放弃都算「本轮有结论」');
+assert.equal(tagProgress.need, 1, '只有 D 还要抓');
+assert.equal(tagProgress.failed, 1);
+assert.equal(tagProgress.tagged, 1);
+
+// 一道抓不到不该让计划里残留「还要补抓」，否则续跑会一直重试这几道
+const planWithFailure = buildPlan({
+  submissions: [{ pid: 'A', id: '1' }],
+  pidTags: { A: failedEntry },
+  syncedAt: 1,
+  now: 2000
+});
+assert.equal(planWithFailure.tags.remaining, 0);
+assert.equal(planWithFailure.tags.failed, 1);
 
 /* ---------- 抓代码的目标筛选 ---------- */
 

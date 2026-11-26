@@ -75,7 +75,9 @@ export function createAnalysisProgress(container) {
       target.row.dataset.status = step.status || 'pending';
       target.count.textContent = countText(step);
       target.eta.textContent = etaText(id, step);
-      target.bar.style.width = `${stepPercent(step)}%`;
+      // 还没开始的步骤不画进度条：预填的「已抓 410/421」会让条子看着像快跑完了，
+      // 但状态还写着「等待」，容易让人以为卡住。
+      target.bar.style.width = step.status === 'pending' ? '0%' : `${stepPercent(step)}%`;
       target.detail.textContent = step.status === 'failed' ? step.error || step.detail || '' : step.detail || '';
     }
 

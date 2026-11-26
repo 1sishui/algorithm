@@ -78,7 +78,7 @@ supabase/functions/diagnose/index.ts  # 生产版代理（未部署）
 | key | 内容 |
 |---|---|
 | `algo-agent:submissions` | 洛谷提交记录（含代码、算法标签） |
-| `algo-agent:pid-tags` | 每题标签 `{tags, categories, checked}` |
+| `algo-agent:pid-tags` | 每题标签 `{tags, categories, checked}`；抓不到的会带 `failedAt`，12 小时内跳过、不反复卡流程 |
 | `algo-agent:luogu-client-id` / `luogu-uid` | 绑定的 Cookie |
 | `algo-agent:synced-at` | 上次同步时间（用于分析门禁） |
 | `algo-agent:runs` | 本机运行记录（六维运行口径） |
@@ -102,6 +102,10 @@ supabase/functions/diagnose/index.ts  # 生产版代理（未部署）
   否则每次同步都会清掉上次抓的代码，「继续分析」退化成从头跑。
 - 分析的断点靠「数据本身就是断点」：标签的 `checked`、记录的 `code`、`algoTags` 各自每几条就落盘；
   不要另记一套账，否则两边会对不上。
+- **抓不到标签不能中断整个分析**：只记 `failedAt`（12 小时不重试）然后继续归类/模型。
+  否则同几道坏题每次都失败，归类与模型永远跑不到——这个坑踩过一次。
+- 点「继续分析」时直接复用上次的任务状态、跳过 `done` 的步骤，不要重新 `createJob()`，
+  否则界面又回到「第 1/4 步」，用户会以为在从头跑。
 - Windows 批处理必须 GBK + CRLF，否则打不开。
 
 ## 当前状态 / 下一步

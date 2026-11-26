@@ -56,28 +56,43 @@ export function normalizeTagEntry(value) {
   return { tags, checked };
 }
 
+/** 抓不到的标签先跳过多久再重试：避免每次分析都卡在同几道坏题上 */
+export const TAG_RETRY_MS = 12 * 60 * 60 * 1000;
+
 /** 这道题还要不要去洛谷补抓标签（和 app.js 里的判断口径保持一致） */
-export function tagNeedsFetch(value) {
+export function tagNeedsFetch(value, now = Date.now()) {
   if (value === undefined) return true;
-  return !normalizeTagEntry(value).checked;
+  const entry = normalizeTagEntry(value);
+  if (entry.checked) return false;
+  // 抓过但失败的：12 小时内不重试，把流程让给后面的步骤
+  if (!Array.isArray(value) && value && value.failedAt) {
+    const failedAt = Number(value.failedAt) || 0;
+    if (now - failedAt < TAG_RETRY_MS) return false;
+  }
+  return true;
 }
 
-/** 标签进度：总共多少题、已经查过多少、查出了多少、还差多少 */
-export function countTagProgress(pidTags, pids) {
+/** 标签进度：总共多少题、已经查过多少、查出了多少、还差多少、暂时放弃了多少 */
+export function countTagProgress(pidTags, pids, now = Date.now()) {
   let total = 0;
   let checked = 0;
   let tagged = 0;
   let need = 0;
+  let failed = 0;
 
   for (const pid of pids) {
     total += 1;
-    const entry = normalizeTagEntry(pidTags[pid]);
-    if (entry.checked) checked += 1;
-    else need += 1;
+    const raw = pidTags[pid];
+    const entry = normalizeTagEntry(raw);
     if (entry.tags.length > 0) tagged += 1;
+    if (tagNeedsFetch(raw, now)) need += 1;
+    else checked += 1;
+    if (!Array.isArray(raw) && raw && raw.failedAt && now - Number(raw.failedAt) < TAG_RETRY_MS) {
+      failed += 1;
+    }
   }
 
-  return { total, checked, tagged, need, empty: total - tagged };
+  return { total, checked, tagged, need, failed, empty: total - tagged };
 }
 
 /** 取「同一道题多次提交」里最近若干道、每题最近若干次；和原来抓代码的口径一致 */
@@ -107,9 +122,9 @@ export function classifyQueue(submissions, limit = MAX_CLASSIFY) {
  * 根据当前 localStorage 里的数据算出「每步还差多少」。
  * 这是续跑的唯一依据：数据本身就是断点，不额外记一套账。
  */
-export function buildPlan({ submissions = [], pidTags = {}, syncedAt = 0, hasReport = false } = {}) {
+export function buildPlan({ submissions = [], pidTags = {}, syncedAt = 0, hasReport = false, now = Date.now() } = {}) {
   const pids = [...new Set((submissions || []).map((record) => record && record.pid).filter(Boolean))];
-  const tags = countTagProgress(pidTags || {}, pids);
+  const tags = countTagProgress(pidTags || {}, pids, now);
 
   const codeRecords = pickCodeTargets(submissions).flat();
   const codes = {
@@ -135,7 +150,7 @@ export function buildPlan({ submissions = [], pidTags = {}, syncedAt = 0, hasRep
       remaining: (submissions || []).length,
       known: (submissions || []).length
     },
-    tags: { done: tags.checked, total: tags.total, remaining: tags.need, tagged: tags.tagged, empty: tags.empty },
+    tags: { done: tags.checked, total: tags.total, remaining: tags.need, tagged: tags.tagged, empty: tags.empty, failed: tags.failed },
     codes,
     labels,
     classify: {
