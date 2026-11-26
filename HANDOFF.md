@@ -64,6 +64,9 @@ src/
   import/luoguClient.js  # 调本地 API
   ui/verdict.js          # 算法诊断 + 推荐
   agent/report.js        # AI 诊断请求与渲染
+  agent/analysisPipeline.js # 分析任务的分步计划 / 预计耗时 / 断点（纯逻辑，可单测）
+  agent/codeTags.js      # 代码算法归类请求
+  ui/analysisProgress.js # 数据页四步进度条（只画，不算）
 server/
   llm_proxy.py           # 模型代理 + 提示词（诊断/分析/代码归类）
   luogu_proxy.py         # 洛谷代理（记录/标签/推荐）
@@ -81,6 +84,8 @@ supabase/functions/diagnose/index.ts  # 生产版代理（未部署）
 | `algo-agent:runs` | 本机运行记录（六维运行口径） |
 | `algo-agent:usercode` | 用户自定义算法代码 |
 | `algo-agent:view` | 上次停留的页面 |
+| `algo-agent:analysis-job` | 没跑完的分析任务（断点：停在哪步、每步 done/total、失败原因）；成功或从头重跑时清掉 |
+| `algo-agent:last-report` | 上次生成的个人分析报告 + 时间（刷新后右栏还能看到，不重复花 token） |
 
 ## 踩过的坑（别再踩）
 
@@ -90,11 +95,18 @@ supabase/functions/diagnose/index.ts  # 生产版代理（未部署）
 - 洛谷父级树找不到「数据结构」，所以改用本地关键词归并。
 - 本地存储 5MB 上限：代码文本容易撑爆，`saveSubmissions` 有瘦身降级。
 - 离线打包（`tools/build-offline.mjs`）按 import 拓扑排序，顺序错会白屏。
+  **`MODULES` 是手写清单**：新增模块必须加进去，否则离线版白屏。
+- 进度面板必须放在 `#luogu-summary` **外面**：`renderLuoguSummary()` 会重写它的 innerHTML，
+  放里面一同步就没了。
+- 洛谷同步回来的记录**不带 code / algoTags**，`mergeSubmissions` 要保留旧字段，
+  否则每次同步都会清掉上次抓的代码，「继续分析」退化成从头跑。
+- 分析的断点靠「数据本身就是断点」：标签的 `checked`、记录的 `code`、`algoTags` 各自每几条就落盘；
+  不要另记一套账，否则两边会对不上。
 - Windows 批处理必须 GBK + CRLF，否则打不开。
 
 ## 当前状态 / 下一步
 
-见 `BACKLOG.md`。最近在做：洛谷数据链路（同步、标签、诊断、推荐）已通，待做真实用户验证与阈值校准。
+见 `BACKLOG.md`。最近在做：洛谷数据链路（同步、标签、诊断、推荐）已通；数据页「分析个人情况」已改为四步进度 + 断点续跑（11/26），待做真实用户验证与阈值校准。
 
 ## 给新会话的开场白（直接复制）
 

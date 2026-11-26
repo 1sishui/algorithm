@@ -25,6 +25,21 @@ import { buildCategoryStats, renderVerdict } from './ui/verdict.js';
 import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
 import { requestAnalysis, renderReport } from './agent/report.js';
 import { classifyCodes } from './agent/codeTags.js';
+import { createAnalysisProgress } from './ui/analysisProgress.js';
+import {
+  buildPlan,
+  classifyQueue,
+  createJob,
+  createJobStore,
+  describeResume,
+  estimateJobSeconds,
+  formatEta,
+  isJobComplete,
+  pickCodeTargets,
+  STEP_IDS,
+  STEP_LABELS,
+  tagNeedsFetch
+} from './agent/analysisPipeline.js';
 import {
   pushRecord,
   loadRecords,
@@ -92,8 +107,29 @@ const el = {
   cookieStatus: $('cookie-status'),
   analyzeStatus: $('analyze-status'),
   analyzeBody: $('analyze-body'),
-  algoDetailBody: $('algo-detail-body')
+  algoDetailBody: $('algo-detail-body'),
+  dataStatus: $('data-status'),
+  jobBox: $('analysis-job'),
+  jobTitle: $('analysis-job-title'),
+  jobEta: $('analysis-job-eta'),
+  jobError: $('analysis-job-error'),
+  dataSteps: $('data-steps'),
+  analysisReport: $('analysis-report'),
+  reportTime: $('report-time')
 };
+
+/** 断点状态存 localStorage；隐私模式下拿不到也不报错，只是不能续跑 */
+const jobStore = createJobStore(
+  (() => {
+    try {
+      return window.localStorage;
+    } catch {
+      return null;
+    }
+  })()
+);
+
+const progressView = createAnalysisProgress(el.dataSteps);
 
 /** 下拉框里的“我的代码”入口 */
 const USER_ALGO = {
@@ -490,11 +526,8 @@ function setAnalyzeStatus(text, kind) {
 }
 
 async function runAnalysis() {
-  if (analyzing) return;
-  if (!lastDims) {
-    setAnalyzeStatus('还没有可分析的数据', 'bad');
-    return;
-  }
+  if (analyzing) return { ok: false, reason: 'busy', message: '上一次模型分析还没结束' };
+  if (!lastDims) return { ok: false, reason: 'no_data', message: '还没有可分析的数据' };
 
   const dims = {};
   for (const [key, item] of Object.entries(lastDims)) {
@@ -504,23 +537,31 @@ async function runAnalysis() {
   analyzing = true;
   setAnalyzeStatus('模型分析中…', 'muted');
 
-  const algorithms = computeAlgorithmStats();
-  const response = await requestAnalysis(dims, lastStats || {}, algorithms);
-  analyzing = false;
+  try {
+    const response = await requestAnalysis(dims, lastStats || {}, computeAlgorithmStats());
+    if (!response.ok) {
+      setAnalyzeStatus(analysisFailureText(response), 'bad');
+      return response;
+    }
 
-  if (!response.ok) {
-    const reason = response.reason || '';
-    const hint =
-      reason === 'offline_file' ? '离线版不连模型'
-      : reason === 'no_api_key' ? '服务端没配 key'
-      : reason === 'timeout' ? '模型超时'
-      : response.message || '分析失败';
-    setAnalyzeStatus(hint, 'bad');
-    return;
+    renderReport(el.analyzeBody, response.result);
+    // 报告存一份：刷新页面后右栏还能看到上一次的结果，而不是空白
+    jobStore.saveReport({ at: Date.now(), result: response.result });
+    renderReportTime(Date.now(), '报告生成');
+    setAnalyzeStatus('已更新', 'ok');
+    return response;
+  } finally {
+    analyzing = false;
   }
+}
 
-  renderReport(el.analyzeBody, response.result);
-  setAnalyzeStatus('已更新', 'ok');
+/** 把 requestAnalysis 的失败原因翻译成一句用户能行动的话 */
+function analysisFailureText(response) {
+  const reason = (response && response.reason) || '';
+  if (reason === 'offline_file') return '离线版不连模型';
+  if (reason === 'no_api_key') return '服务端没配 key';
+  if (reason === 'timeout') return '模型超时';
+  return (response && response.message) || '分析失败';
 }
 
 el.clearRuns.addEventListener('click', () => {
@@ -559,6 +600,16 @@ try {
 if (clientId) el.cookieClientId.value = clientId;
 if (luoguUid) el.cookieUid.value = luoguUid;
 
+/** 存储告警只提示一次，避免分析过程中每存一次盘就刷一遍 */
+let quotaWarned = false;
+
+function warnQuota(text) {
+  if (quotaWarned) return;
+  quotaWarned = true;
+  setCookieStatus(text, 'bad');
+  setDataStatus(text, 'bad');
+}
+
 function saveSubmissions() {
   try {
     localStorage.setItem(LUOGU_KEY, JSON.stringify(submissions));
@@ -575,9 +626,9 @@ function saveSubmissions() {
   try {
     localStorage.setItem(LUOGU_KEY, JSON.stringify(slim));
     submissions = slim;
-    setCookieStatus('本地存储接近上限：只保留了最近 40 段代码，统计数据不受影响', 'bad');
+    warnQuota('本地存储接近上限：只保留了最近 40 段代码，统计数据不受影响');
   } catch {
-    setCookieStatus('本地存储已满，这次的数据没能保存（刷新后会回到上次状态）', 'bad');
+    warnQuota('本地存储已满，这次的数据没能保存（刷新后会回到上次状态）');
   }
 }
 
@@ -589,7 +640,7 @@ function markSynced() {
     /* 忽略 */
   }
   el.analyzeProfileBtn.disabled = false;
-  el.analyzeProfileBtn.title = '';
+  refreshJobButton();
 }
 
 function savePidTags() {
@@ -606,6 +657,31 @@ function setCookieStatus(text, kind) {
     node.textContent = text;
     node.className = cls;
   });
+}
+
+/**
+ * 数据页自己的状态行。
+ * 原来 setCookieStatus 会写所有 .luogu-status，把绑定页的「已绑定 UID」也覆盖掉；
+ * 分析进度属于数据页，只写这里。
+ */
+function setDataStatus(text, kind) {
+  const cls = `muted data-status ${kind || ''}`.trim();
+  el.dataStatus.textContent = text;
+  el.dataStatus.className = cls;
+}
+
+/** 报告时间戳：刚生成显示「报告生成 14:32」，启动时恢复显示「上次分析 11-26 09:30」 */
+function renderReportTime(at, prefix = '上次分析') {
+  if (!el.reportTime) return;
+  if (!at) {
+    el.reportTime.textContent = '';
+    return;
+  }
+  const date = new Date(at);
+  const pad = (value) => String(value).padStart(2, '0');
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  el.reportTime.textContent =
+    prefix === '报告生成' ? `${prefix} ${time}` : `${prefix} ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
 }
 
 if (clientId && luoguUid) {
@@ -648,11 +724,12 @@ function readCookieForm() {
   return { id, uid, cookie: `__client_id=${id}; _uid=${uid}` };
 }
 
-/** 校验并记住绑定信息；失败时返回 null */
-function ensureBinding() {
+/** 校验并记住绑定信息；失败时返回 null。scope='data' 时错误写在数据页的状态行 */
+function ensureBinding(scope = 'bind') {
   const form = readCookieForm();
   if (form.error) {
-    setCookieStatus(form.error, 'bad');
+    if (scope === 'data') setDataStatus(form.error, 'bad');
+    else setCookieStatus(form.error, 'bad');
     return null;
   }
   clientId = form.id;
@@ -669,7 +746,11 @@ function ensureBinding() {
 function mergeSubmissions(incoming) {
   const map = new Map();
   for (const record of [...submissions, ...incoming]) {
-    map.set(record.id || `${record.pid}-${record.submittedAt}`, record);
+    const key = record.id || `${record.pid}-${record.submittedAt}`;
+    const previous = map.get(key);
+    // 同步回来的记录不带 code/algoTags，直接覆盖会把上次抓到的代码和归类结果抹掉，
+    // 那样「继续分析」就退化成从头跑。同一条提交以新状态为准，但已有分析结果保留。
+    map.set(key, previous ? { ...previous, ...record } : record);
   }
   submissions = [...map.values()]
     .sort((a, b) => new Date(a.submittedAt || 0) - new Date(b.submittedAt || 0))
@@ -867,14 +948,11 @@ function hideChartTip() {
   if (chartTip) chartTip.style.display = 'none';
 }
 
-/** 拉记录（自动翻页） */
-async function syncPages(form) {
+/** 拉记录（自动翻页）。onProgress(page, got, total) 直接喂给分步进度条 */
+async function syncPages(form, onProgress) {
   const result = await syncLuoguWithCookie(form.uid, form.cookie, {
     maxPages: 200,
-    onProgress: (page, got, total) => {
-      const tail = typeof total === 'number' ? ` / 共 ${total} 条` : '';
-      setCookieStatus(`同步记录：第 ${page} 页，已拿到 ${got} 条${tail}`, 'muted');
-    }
+    onProgress
   });
 
   const normalized = normalizeRecords(result.records || []);
@@ -882,23 +960,20 @@ async function syncPages(form) {
     mergeSubmissions(normalized);
     saveSubmissions();
   }
-  return { ok: result.ok, error: result.error, added: normalized.length };
+  return { ok: result.ok, error: result.error, added: normalized.length, total: result.total };
 }
 
 /** 抓题目标签：所有有提交记录的题都要抓（含没做出来的） */
-async function syncTags(form) {
+async function syncTags(form, onProgress) {
   // 抓全部做过的题：没做出来的题也要参与算法强弱的判断
   const pids = [...new Set(submissions.map((r) => r.pid).filter(Boolean))];
-  // 没抓过的、以及老数据里抓成空但没标记 checked 的，都补抓一次
-  const need = pids.filter((pid) => {
-    const entry = pidTags[pid];
-    if (entry === undefined) return true;
-    if (entry && entry.checked) return false;
-    return tagEntry(pid).tags.length === 0;
-  });
-  if (need.length === 0) {
+  const need = pids.filter((pid) => tagNeedsFetch(pidTags[pid]));
+  const total = pids.length;
+  const needTotal = need.length;
+
+  if (needTotal === 0) {
     const tagged = pids.filter((pid) => tagEntry(pid).tags.length > 0).length;
-    return { ok: true, added: 0, failed: 0, total: pids.length, tagged, empty: pids.length - tagged };
+    return { ok: true, added: 0, failed: 0, total, checked: total, tagged, empty: total - tagged, need: 0 };
   }
 
   let done = 0;
@@ -918,8 +993,20 @@ async function syncTags(form) {
     if (await grab(pid)) ok += 1;
     else failed.push(pid);
     done += 1;
-    if (done % 5 === 0 || done === need.length) {
-      setCookieStatus(`抓取题目标签 ${done}/${need.length}，失败 ${failed.length}`, 'muted');
+
+    // 每抓几道就落盘：中途断网或关页时，已抓到的标签不能跟着内存一起丢
+    if (done % 5 === 0 || done === needTotal) savePidTags();
+
+    if (onProgress) {
+      onProgress({
+        done: total - needTotal + ok,
+        total,
+        remaining: needTotal - done,
+        needDone: done,
+        needTotal,
+        failed: failed.length,
+        detail: `本次补抓 ${done}/${needTotal}${failed.length ? `，失败 ${failed.length}` : ''}`
+      });
     }
     await new Promise((resolve) => setTimeout(resolve, 160));
   }
@@ -931,36 +1018,44 @@ async function syncTags(form) {
     for (const pid of retry) {
       if (await grab(pid)) ok += 1;
       else failed.push(pid);
+      savePidTags();
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
 
   savePidTags();
-  const tagged = pids.filter((p) => tagEntry(p).tags.length > 0).length;
-  return { ok: true, added: ok, failed: failed.length, total: pids.length, tagged, empty: pids.length - tagged };
+  const checked = pids.filter((pid) => !tagNeedsFetch(pidTags[pid])).length;
+  const tagged = pids.filter((pid) => tagEntry(pid).tags.length > 0).length;
+  return { ok: true, added: ok, failed: failed.length, total, checked, tagged, empty: total - tagged, need: needTotal };
 }
 
 /** 动作一：同步做题情况（只统计，不调用模型） */
 async function syncDoing() {
-  const form = ensureBinding();
+  const form = ensureBinding('data');
   if (!form) return;
 
   el.syncDoingBtn.disabled = true;
   try {
-    setCookieStatus('同步记录中…', 'muted');
-    const records = await syncPages(form);
+    setDataStatus('同步记录中…', 'muted');
+    const records = await syncPages(form, (page, got, total) => {
+      const tail = typeof total === 'number' ? ` / 共 ${total} 条` : '';
+      setDataStatus(`同步记录：第 ${page} 页，已拿到 ${got} 条${tail}`, 'muted');
+    });
     if (!records.ok) {
-      setCookieStatus(`同步失败：${(records.error && records.error.message) || '未知原因'}`, 'bad');
+      setDataStatus(`同步失败：${(records.error && records.error.message) || '未知原因'}`, 'bad');
       return;
     }
 
-    const tags = await syncTags(form);
+    const tags = await syncTags(form, (progress) => {
+      const failed = progress.failed ? `，失败 ${progress.failed}` : '';
+      setDataStatus(`抓取题目标签 ${progress.done}/${progress.total}${failed}`, 'muted');
+    });
     renderLuoguSummary();
     refreshFeatures();
 
     const stats = summarizeSubmissions(submissions);
     markSynced();
-    setCookieStatus(
+    setDataStatus(
       `已同步 ${records.added} 条提交，共 ${stats.problems} 道题（通过 ${stats.solved} 道）；` +
         `标签：${tags.tagged} 道有 / ${tags.empty} 道洛谷没有算法标签` +
         (tags.failed ? ` / ${tags.failed} 道抓取失败` : ''),
@@ -971,98 +1066,441 @@ async function syncDoing() {
   }
 }
 
-/** 动作二：分析个人情况（抓代码 → 归类 → 模型诊断） */
+/* ---------------- 动作二：分析个人情况（分步 / 可续） ---------------- */
+
+let jobRunning = false;
+let currentJob = null;
+let lastJobSavedAt = 0;
+
+function stepLabelOf(id) {
+  return STEP_LABELS[id] || '分析';
+}
+
+function messageOf(error) {
+  if (!error) return '未知原因';
+  if (typeof error === 'string') return error;
+  return error.message || String(error);
+}
+
+function showJobBox(visible) {
+  el.jobBox.hidden = !visible;
+}
+
+/** 进度回调很密，落盘做 1 秒节流；换步骤时强制写一次 */
+function saveJobSoon(force = false) {
+  if (!currentJob) return;
+  const now = Date.now();
+  if (!force && now - lastJobSavedAt < 1000) return;
+  lastJobSavedAt = now;
+  jobStore.saveJob(currentJob);
+}
+
+function renderJob() {
+  if (!currentJob) return;
+  progressView.update(currentJob);
+
+  const total = STEP_IDS.length;
+  const index = Math.max(0, STEP_IDS.indexOf(currentJob.current)) + 1;
+  el.jobTitle.textContent =
+    currentJob.status === 'done'
+      ? '分析完成，报告已生成'
+      : currentJob.status === 'failed'
+        ? '分析中断，已完成的部分已保存'
+        : `正在分析…（第 ${index}/${total} 步）`;
+
+  const eta = currentJob.status === 'running' ? estimateJobSeconds(currentJob) : 0;
+  el.jobEta.textContent = eta > 0 ? `总预计 ${formatEta(eta)}` : '';
+
+  const failed = currentJob.status === 'failed';
+  el.jobError.hidden = !failed;
+  if (failed) {
+    const step = currentJob.steps[currentJob.current] || {};
+    const counts = Number(step.total) > 0 ? `（${step.done}/${step.total}）` : '';
+    el.jobError.textContent = `停在「${stepLabelOf(currentJob.current)}${counts}」：${currentJob.error}。已完成的进度不会丢，点「继续分析」接着跑。`;
+  }
+}
+
+function refreshJobButton() {
+  const button = el.analyzeProfileBtn;
+  if (jobRunning) {
+    button.disabled = true;
+    return;
+  }
+  if (!syncedAt) {
+    button.disabled = true;
+    button.textContent = '分析个人情况';
+    button.title = '请先同步做题情况';
+    return;
+  }
+
+  button.disabled = false;
+  if (currentJob && currentJob.status === 'failed' && !isJobComplete(currentJob)) {
+    button.textContent = `继续分析（${describeResume(currentJob)}）`;
+    button.title = currentJob.error || '';
+  } else {
+    button.textContent = '分析个人情况';
+    button.title = '';
+  }
+}
+
+/** 开始前先用现有数据把每一步「还差多少」填上，进度条不是从 0 开始装样子 */
+function seedJobFromPlan(job) {
+  const plan = buildPlan({
+    submissions,
+    pidTags,
+    syncedAt,
+    hasReport: Boolean(jobStore.loadReport())
+  });
+
+  job.steps.records.total = plan.records.total;
+  job.steps.records.remaining = plan.records.remaining;
+
+  job.steps.tags.done = plan.tags.done;
+  job.steps.tags.total = plan.tags.total;
+  job.steps.tags.remaining = plan.tags.remaining;
+  job.steps.tags.detail = plan.tags.remaining ? `${plan.tags.remaining} 道待补抓` : '已是最新';
+
+  job.steps.classify.codes = plan.codes;
+  job.steps.classify.labels = plan.labels;
+  job.steps.classify.total = plan.classify.total;
+  job.steps.classify.remaining = plan.classify.total;
+  job.steps.classify.detail = `待抓代码 ${plan.codes.remaining} 段 · 待归类 ${plan.labels.remaining} 段`;
+
+  job.steps.model.total = 1;
+  job.steps.model.remaining = 1;
+  return plan;
+}
+
+/**
+ * 跑一步。
+ * executor 拿到一个 report()，用它回传当前/总数和一句话细节；
+ * 失败时把这一步标红、保留已完成计数，然后继续往上抛给 failJob。
+ */
+async function runStep(id, executor, kind) {
+  const step = currentJob.steps[id];
+  step.status = 'running';
+  step.startedAt = Date.now();
+  step.done = 0;
+  step.total = 0;
+  step.remaining = null;
+  step.rateDone = 0;
+  step.kind = kind || id;
+  step.detail = '';
+  step.error = '';
+  currentJob.current = id;
+  currentJob.status = 'running';
+  currentJob.error = '';
+  renderJob();
+  saveJobSoon(true);
+
+  const report = (progress = {}) => {
+    // 进入子阶段（抓代码 → 归类）时计数和计时重新开始，否则 ETA 会拿上一阶段的速率算下一步
+    if (progress.kind && progress.kind !== step.kind) {
+      step.kind = progress.kind;
+      step.startedAt = Date.now();
+      step.done = 0;
+      step.total = 0;
+      step.rateDone = 0;
+    }
+    if (Number.isFinite(progress.done)) step.done = progress.done;
+    if (Number.isFinite(progress.rateDone)) step.rateDone = progress.rateDone;
+    if (Number.isFinite(progress.total)) step.total = progress.total;
+    step.remaining = Number.isFinite(progress.remaining)
+      ? progress.remaining
+      : Math.max(0, (Number(step.total) || 0) - (Number(step.done) || 0));
+    if (progress.detail !== undefined) step.detail = progress.detail;
+    renderJob();
+    saveJobSoon();
+  };
+
+  try {
+    const result = (await executor(report)) || {};
+    if (Number.isFinite(result.done)) step.done = result.done;
+    if (Number.isFinite(result.total)) step.total = result.total;
+    step.remaining = 0;
+    step.status = 'done';
+    step.elapsedMs = Date.now() - step.startedAt;
+    step.startedAt = 0;
+    if (result.detail !== undefined) step.detail = result.detail;
+    renderJob();
+    saveJobSoon(true);
+    return result;
+  } catch (error) {
+    step.status = 'failed';
+    step.error = messageOf(error);
+    step.remaining = Math.max(0, (Number(step.total) || 0) - (Number(step.done) || 0));
+    saveJobSoon(true);
+    throw error;
+  }
+}
+
+async function runRecordsStep(form) {
+  return runStep(
+    'records',
+    async (report) => {
+      const result = await syncPages(form, (page, got, total) => {
+        const known = Number.isFinite(total) && total > 0 ? total : got;
+        report({
+          done: got,
+          total: known,
+          remaining: Number.isFinite(total) && total > 0 ? Math.max(0, total - got) : Math.max(1, got),
+          detail: `第 ${page} 页${Number.isFinite(total) && total > 0 ? ` / 共 ${total} 条` : ''}`
+        });
+      });
+
+      if (!result.ok) {
+        const reason = (result.error && result.error.message) || '同步记录失败';
+        throw new Error(`${reason}（已保存 ${result.added} 条，重试会接着补）`);
+      }
+      if (result.added === 0) return { detail: `已是最新（${submissions.length} 条记录）` };
+      return { detail: `新增 ${result.added} 条，共 ${submissions.length} 条` };
+    },
+    'records'
+  );
+}
+
+async function runTagsStep(form) {
+  return runStep(
+    'tags',
+    async (report) => {
+      const result = await syncTags(form, (progress) => {
+        report({
+          done: progress.done,
+          total: progress.total,
+          remaining: progress.remaining,
+          rateDone: progress.needDone,
+          detail: `本次补抓 ${progress.needDone}/${progress.needTotal}${progress.failed ? `，失败 ${progress.failed}` : ''}`
+        });
+      });
+
+      if (result.total === 0) return { detail: '没有需要抓标签的题目' };
+      if (result.need > 0 && result.added === 0 && result.failed >= result.need) {
+        throw new Error(`标签全部抓取失败（${result.failed} 道），可能是网络断了或 Cookie 失效`);
+      }
+      if (result.added === 0) return { done: result.checked, total: result.total, detail: '已是最新' };
+
+      const failed = result.failed > 0 ? `，${result.failed} 道失败（下次补抓）` : '';
+      return { done: result.checked, total: result.total, detail: `新抓 ${result.added} 道${failed}` };
+    },
+    'tags'
+  );
+}
+
+async function runClassifyStep(form) {
+  return runStep(
+    'classify',
+    async (report) => {
+      const codes = await fetchCodesForAnalysis(form, (progress) => {
+        report({ ...progress, kind: 'codes', detail: `抓代码 ${progress.done}/${progress.total}` });
+      });
+
+      const pending = classifyQueue(submissions).length;
+      report({
+        kind: 'classify',
+        done: 0,
+        total: pending,
+        remaining: pending,
+        detail: pending ? '抓代码完成，开始归类' : '抓代码完成，没有需要归类的代码'
+      });
+
+      const labels = await classifyCollectedCodes((progress) => {
+        report({
+          ...progress,
+          kind: 'classify',
+          detail: `归类 ${progress.done}/${progress.total}，已标 ${progress.tagged} 段`
+        });
+      });
+
+      const parts = [];
+      if (codes.added) parts.push(`新抓 ${codes.added} 段代码`);
+      if (labels.tagged) parts.push(`新归类 ${labels.tagged} 段`);
+      return { detail: parts.length ? parts.join('，') : '已是最新' };
+    },
+    'codes'
+  );
+}
+
+async function runModelStep() {
+  return runStep(
+    'model',
+    async (report) => {
+      report({ done: 0, total: 1, remaining: 1, detail: '等待模型返回（这一步不能分段，通常 10–30 秒）' });
+      const response = await runAnalysis();
+      if (!response.ok) throw new Error(analysisFailureText(response));
+      report({ done: 1, total: 1, remaining: 0, detail: '报告已生成' });
+      return { detail: '报告已生成' };
+    },
+    'model'
+  );
+}
+
+function finishJob() {
+  currentJob.status = 'done';
+  currentJob.current = null;
+  currentJob.finishedAt = Date.now();
+  currentJob.error = '';
+  renderJob();
+  jobStore.clearJob(); // 跑完了就不需要「继续」
+  refreshFeatures();
+  renderLuoguSummary();
+  setDataStatus('分析完成 · 报告已生成', 'ok');
+  revealReport();
+}
+
+function failJob(error) {
+  const id = currentJob.current;
+  currentJob.status = 'failed';
+  currentJob.error = messageOf(error);
+  currentJob.finishedAt = Date.now();
+
+  const step = id ? currentJob.steps[id] : null;
+  if (step) {
+    step.status = 'failed';
+    step.error = currentJob.error;
+  }
+  jobStore.saveJob(currentJob);
+  renderJob();
+
+  const counts = step && Number(step.total) > 0 ? `（${step.done}/${step.total}）` : '';
+  const index = Math.max(1, STEP_IDS.indexOf(id) + 1);
+  setDataStatus(
+    `第 ${index} 步「${stepLabelOf(id)}」失败${counts}：${currentJob.error}。已完成的进度已保存，点「继续分析」接着跑。`,
+    'bad'
+  );
+  setAnalyzeStatus('分析中断', 'bad');
+}
+
+/** 完成后切到报告所在的页面并滚过去；用户正在输入时不抢焦点 */
+function revealReport() {
+  const target = el.analysisReport;
+  if (!target) return;
+
+  const active = document.activeElement;
+  const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+  if (typing) {
+    setDataStatus('分析完成 · 报告已生成（当前有输入框在用，没有自动切页）', 'ok');
+    return;
+  }
+
+  switchView('visual');
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  setTimeout(() => {
+    target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    target.classList.remove('flash');
+    void target.offsetWidth; // 强制回流，连续两次分析都能看到高亮
+    target.classList.add('flash');
+    setTimeout(() => target.classList.remove('flash'), 2000);
+  }, 80);
+}
+
 async function analyzeProfile() {
-  const form = ensureBinding();
+  if (jobRunning) return;
+
+  const form = ensureBinding('data');
   if (!form) return;
 
-  // 必须先同步过做题情况，才有数据可分析
+  // 必须先同步过做题情况，才有数据可分析（HANDOFF 第 3 条约定）
   if (!syncedAt || submissions.length === 0) {
-    setCookieStatus('请先点「同步做题情况」，同步完成后才能分析个人情况', 'bad');
+    setDataStatus('请先点「同步做题情况」，同步完成后才能分析个人情况', 'bad');
     return;
   }
 
   const health = await checkHealth();
-  if (!health.ok || !health.data.key_configured) {
-    setCookieStatus('需要先在 .env 里配置模型 key，才能做个人分析', 'bad');
+  if (!health.ok) {
+    setDataStatus(`连不上本地服务：${explainFailure(health)}`, 'bad');
+    return;
+  }
+  if (!health.data.key_configured) {
+    setDataStatus('需要先在 .env 里配置模型 key，才能做个人分析', 'bad');
     return;
   }
 
-  if (submissions.length === 0) {
-    setCookieStatus('还没有做题记录，先点「同步做题情况」', 'bad');
-    return;
-  }
-
+  jobRunning = true;
   el.analyzeProfileBtn.disabled = true;
+  currentJob = createJob();
+  // 预填只影响显示，算不出来也不该挡住真正要跑的任务
   try {
-    await fetchCodesForAnalysis(form);
-    await classifyCollectedCodes();
-    refreshFeatures();
+    seedJobFromPlan(currentJob);
+  } catch {
+    /* 忽略：每步开始时会按真实数据重新算 */
+  }
+  showJobBox(true);
+  renderJob();
+  saveJobSoon(true);
+  setDataStatus('开始分析：先补记录和标签，再抓代码归类，最后交给模型。中途失败可以从断点继续。', 'muted');
 
-    setCookieStatus('模型分析中…', 'muted');
-    await runAnalysis();
-    setCookieStatus('分析完成', 'ok');
+  try {
+    await runRecordsStep(form);
+    await runTagsStep(form);
+    await runClassifyStep(form);
+    await runModelStep();
+    finishJob();
+  } catch (error) {
+    failJob(error);
   } finally {
-    el.analyzeProfileBtn.disabled = false;
+    jobRunning = false;
+    refreshJobButton();
   }
 }
 
 /** 抓代码：只抓「多次提交」的题，每题最多 5 次，总量可控 */
-async function fetchCodesForAnalysis(form, maxProblems = 12, perProblem = 5) {
-  const byProblem = new Map();
-  for (const record of submissions) {
-    if (!byProblem.has(record.pid)) byProblem.set(record.pid, []);
-    byProblem.get(record.pid).push(record);
-  }
-
-  const targets = [...byProblem.values()]
-    .filter((list) => list.length >= 2)
-    .slice(-maxProblems)
-    .map((list) => list.slice(-perProblem));
-
-  const total = targets.reduce((sum, list) => sum + list.filter((r) => !r.code).length, 0);
-  if (total === 0) return;
+async function fetchCodesForAnalysis(form, onProgress) {
+  const records = pickCodeTargets(submissions).flat();
+  const pending = records.filter((record) => !record.code);
+  if (pending.length === 0) return { done: 0, total: 0, added: 0 };
 
   let done = 0;
   let ok = 0;
-  for (const list of targets) {
-    for (const record of list) {
-      if (record.code) continue;
-      const result = await fetchRecordCode(record.id, form.cookie);
-      if (result && result.ok && result.code) {
-        record.code = result.code;
-        ok += 1;
-      }
-      done += 1;
-      setCookieStatus(`抓取代码 ${done}/${total}`, 'muted');
-      await new Promise((resolve) => setTimeout(resolve, 220));
+  const reasons = new Map();
+
+  for (const record of pending) {
+    const result = await fetchRecordCode(record.id, form.cookie);
+    if (result && result.ok && result.code) {
+      record.code = result.code;
+      ok += 1;
+    } else {
+      const reason = (result && result.reason) || 'unknown';
+      reasons.set(reason, (reasons.get(reason) || 0) + 1);
     }
+
+    done += 1;
+    // 每 3 条落盘一次：中断后重跑只补没抓到的
+    if (done % 3 === 0 || done === pending.length) saveSubmissions();
+
+    if (onProgress) onProgress({ done, total: pending.length, remaining: pending.length - done });
+    await new Promise((resolve) => setTimeout(resolve, 220));
   }
 
   saveSubmissions();
-  if (ok === 0) setCookieStatus('没能抓到代码（可能记录不可见）', 'bad');
+
+  // 全是网络/超时错误 = 环境问题，值得中断后重试；全是「看不到这条记录」则是永久失败，继续往下跑
+  const transient =
+    (reasons.get('network') || 0) + (reasons.get('timeout') || 0) + (reasons.get('proxy_error') || 0);
+  if (ok === 0 && done > 0 && transient === done) {
+    throw new Error(`抓代码时连不上洛谷（${done} 次全部失败）`);
+  }
+
+  return { done, total: pending.length, added: ok };
 }
 
 /**
  * 把已抓到的代码分批交给模型打标签（每批 6 段，最多 5 批）。
- * 结果写在 record.algoTags / algoReason 上。
+ * 结果写在 record.algoTags / algoReason 上；每批存一次盘，失败重跑只补没标的。
  */
-async function classifyCollectedCodes() {
-  const pending = submissions.filter((r) => r.code && !(Array.isArray(r.algoTags) && r.algoTags.length));
-  if (pending.length === 0) return;
+async function classifyCollectedCodes(onProgress) {
+  const queue = classifyQueue(submissions);
+  if (queue.length === 0) return { done: 0, total: 0, tagged: 0 };
 
   const batchSize = 6;
-  const queue = pending.slice(0, batchSize * 5);
   let done = 0;
   let tagged = 0;
 
   for (let i = 0; i < queue.length; i += batchSize) {
     const batch = queue.slice(i, i + batchSize);
-    const result = await classifyCodes(batch.map((r) => ({ id: r.id, code: r.code })));
+    const result = await classifyCodes(batch.map((record) => ({ id: record.id, code: record.code })));
 
     if (!result.ok) {
-      setCookieStatus(`代码归类失败：${result.message || result.reason || '未知原因'}`, 'bad');
-      break;
+      throw new Error(`代码归类失败：${result.message || result.reason || '未知原因'}`);
     }
 
     const byId = new Map(result.results.map((item) => [String(item.id), item]));
@@ -1077,11 +1515,51 @@ async function classifyCollectedCodes() {
     }
 
     saveSubmissions();
-    setCookieStatus(`代码归类 ${done}/${queue.length}，已标 ${tagged} 段`, 'muted');
+    if (onProgress) onProgress({ done, total: queue.length, remaining: queue.length - done, tagged });
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
 
   saveSubmissions();
+  return { done, total: queue.length, tagged };
+}
+
+/** 启动时恢复：上次的报告 + 没跑完的任务（只提示，不自动发请求） */
+function restoreAnalysisState() {
+  const saved = jobStore.loadReport();
+  if (saved && saved.result) {
+    renderReport(el.analyzeBody, saved.result);
+    renderReportTime(saved.at);
+  }
+
+  const job = jobStore.loadJob();
+  if (!job) return;
+  if (isJobComplete(job)) {
+    jobStore.clearJob();
+    return;
+  }
+
+  // 状态还停在 running → 页面被刷新/关掉了，当作中断处理
+  if (job.status === 'running') {
+    job.status = 'failed';
+    job.error = '页面被关闭或刷新，任务中断';
+    const step = job.steps[job.current];
+    if (step && step.status === 'running') {
+      step.status = 'failed';
+      step.error = job.error;
+    }
+    jobStore.saveJob(job);
+  }
+
+  currentJob = job;
+  showJobBox(true);
+  renderJob();
+
+  const step = job.steps[job.current] || {};
+  const counts = Number(step.total) > 0 ? ` ${step.done}/${step.total}` : '';
+  setDataStatus(
+    `上次分析没跑完（停在「${stepLabelOf(job.current)}${counts}」），点「继续分析」接着跑，已完成的不会重做。`,
+    'bad'
+  );
 }
 
 /** 展示“凭什么这么判断”：每道题用的算法 + 模型给的依据 */
@@ -1387,11 +1865,9 @@ renderAlgoDetail();
 refreshFeatures();
 build();
 
-// 没同步过就不能分析个人情况
-if (!syncedAt) {
-  el.analyzeProfileBtn.disabled = true;
-  el.analyzeProfileBtn.title = '请先同步做题情况';
-}
+// 恢复上次的报告和没跑完的分析任务；没同步过仍然禁用「分析个人情况」
+restoreAnalysisState();
+refreshJobButton();
 
 // 恢复上次停留的页面
 let savedView = 'visual';

@@ -100,9 +100,10 @@
       <div id="mastery"></div>
       <div id="mastery-source" class="muted"></div>
 
-      <div class="ai-report">
+      <div class="ai-report" id="analysis-report">
         <div class="ai-head">
           <span class="ai-title">个人分析</span>
+          <span id="report-time" class="report-time"></span>
           <span id="analyze-status" class="muted"></span>
         </div>
         <div id="analyze-body"></div>
@@ -162,7 +163,17 @@
     <div class="mycode-actions">
       <button id="btn-sync-doing" class="primary">同步做题情况</button>
       <button id="btn-analyze-profile" class="primary">分析个人情况</button>
-      <span id="data-status" class="muted luogu-status"></span>
+      <span id="data-status" class="muted data-status"></span>
+    </div>
+
+    <!-- 分步进度：必须放在 #luogu-summary 外面，图表重绘时不能把它一起清掉 -->
+    <div id="analysis-job" class="job" hidden>
+      <div class="job-head">
+        <span id="analysis-job-title" class="job-title" role="status" aria-live="polite">准备分析…</span>
+        <span id="analysis-job-eta" class="job-eta-total"></span>
+      </div>
+      <ol id="data-steps" class="job-steps"></ol>
+      <p id="analysis-job-error" class="job-error" hidden></p>
     </div>
 
     <div id="luogu-summary" class="luogu-summary"></div>

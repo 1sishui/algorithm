@@ -37,6 +37,8 @@ const MODULES = [
   'src/assessment/diff.js',
   'src/assessment/correction.js',
   'src/ui/verdict.js',
+  'src/agent/analysisPipeline.js',
+  'src/ui/analysisProgress.js',
   'src/agent/report.js',
   'src/agent/codeTags.js',
   'src/ui/diagnosisPanel.js',
