@@ -64,3 +64,17 @@ export function renderReport(container, report) {
     ${report.correctionProfile ? `<div class="report-profile">纠错风格：${escapeHtml(report.correctionProfile)}</div>` : ''}
   `;
 }
+
+/**
+ * 报告是不是有实际内容。
+ * 模型偶尔会返回一个「结构对、字段全空」的 JSON，直接渲染就是一块空白，
+ * 用户只会看到「分析完成」却什么都没有。这种情况要当失败处理，让人重跑模型。
+ */
+export function hasReportContent(report) {
+  if (!report || typeof report !== 'object') return false;
+  if (String(report.summary || '').trim()) return true;
+  if (String(report.correctionProfile || '').trim()) return true;
+  return ['strengths', 'weaknesses', 'suggestions'].some(
+    (key) => Array.isArray(report[key]) && report[key].some((item) => String(item || '').trim())
+  );
+}

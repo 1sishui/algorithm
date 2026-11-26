@@ -23,12 +23,13 @@ import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './impor
 import { categoriesOfTags, categoryOfTag, isNoiseTag } from './knowledge/tagCategories.js';
 import { buildCategoryStats, renderVerdict } from './ui/verdict.js';
 import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
-import { requestAnalysis, renderReport } from './agent/report.js';
+import { requestAnalysis, renderReport, hasReportContent } from './agent/report.js';
 import { classifyCodes } from './agent/codeTags.js';
 import { createAnalysisProgress } from './ui/analysisProgress.js';
 import {
   buildPlan,
   classifyQueue,
+  countTagProgress,
   createJob,
   createJobStore,
   describeResume,
@@ -115,7 +116,10 @@ const el = {
   jobError: $('analysis-job-error'),
   dataSteps: $('data-steps'),
   analysisReport: $('analysis-report'),
-  reportTime: $('report-time')
+  reportTime: $('report-time'),
+  dataReport: $('data-report'),
+  dataReportBody: $('data-report-body'),
+  dataReportTime: $('data-report-time')
 };
 
 /** 断点状态存 localStorage；隐私模式下拿不到也不报错，只是不能续跑 */
@@ -544,8 +548,18 @@ async function runAnalysis() {
       return response;
     }
 
+    // 模型偶尔会返回「字段都在、内容全空」的报告：直接渲染就是一块空白，
+    // 用户只会看到「分析完成」。这里当失败处理，让「继续分析」只重跑模型这一步。
+    if (!hasReportContent(response.result)) {
+      const empty = { ok: false, reason: 'empty_result', message: '模型返回了空报告' };
+      setAnalyzeStatus(analysisFailureText(empty), 'bad');
+      return empty;
+    }
+
     renderReport(el.analyzeBody, response.result);
-    // 报告存一份：刷新页面后右栏还能看到上一次的结果，而不是空白
+    // 数据页也放一份：用户是在这里点按钮的，结果就该在这里出现
+    showDataReport(response.result);
+    // 报告存一份：刷新页面后还能看到上一次的结果，而不是空白
     jobStore.saveReport({ at: Date.now(), result: response.result });
     renderReportTime(Date.now(), '报告生成');
     setAnalyzeStatus('已更新', 'ok');
@@ -561,7 +575,19 @@ function analysisFailureText(response) {
   if (reason === 'offline_file') return '离线版不连模型';
   if (reason === 'no_api_key') return '服务端没配 key';
   if (reason === 'timeout') return '模型超时';
+  if (reason === 'empty_result') return '模型返回了空报告，点「继续分析」只重跑模型这一步';
   return (response && response.message) || '分析失败';
+}
+
+/** 把报告同时放到数据页；没有内容就不显示，避免给一块空白 */
+function showDataReport(report) {
+  if (!el.dataReport || !el.dataReportBody) return;
+  if (!hasReportContent(report)) {
+    el.dataReport.hidden = true;
+    return;
+  }
+  renderReport(el.dataReportBody, report);
+  el.dataReport.hidden = false;
 }
 
 el.clearRuns.addEventListener('click', () => {
@@ -672,16 +698,20 @@ function setDataStatus(text, kind) {
 
 /** 报告时间戳：刚生成显示「报告生成 14:32」，启动时恢复显示「上次分析 11-26 09:30」 */
 function renderReportTime(at, prefix = '上次分析') {
-  if (!el.reportTime) return;
-  if (!at) {
-    el.reportTime.textContent = '';
-    return;
+  let text = '';
+  if (at) {
+    const date = new Date(at);
+    const pad = (value) => String(value).padStart(2, '0');
+    const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    text =
+      prefix === '报告生成'
+        ? `${prefix} ${time}`
+        : `${prefix} ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
   }
-  const date = new Date(at);
-  const pad = (value) => String(value).padStart(2, '0');
-  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  el.reportTime.textContent =
-    prefix === '报告生成' ? `${prefix} ${time}` : `${prefix} ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
+  // 数据页和右栏各有一份报告，时间要一起更新
+  for (const node of [el.reportTime, el.dataReportTime]) {
+    if (node) node.textContent = text;
+  }
 }
 
 if (clientId && luoguUid) {
@@ -970,28 +1000,50 @@ async function syncTags(form, onProgress) {
   const need = pids.filter((pid) => tagNeedsFetch(pidTags[pid]));
   const total = pids.length;
   const needTotal = need.length;
+  const before = countTagProgress(pidTags, pids);
 
   if (needTotal === 0) {
-    const tagged = pids.filter((pid) => tagEntry(pid).tags.length > 0).length;
-    return { ok: true, added: 0, failed: 0, total, checked: total, tagged, empty: total - tagged, need: 0 };
+    return {
+      ok: true,
+      added: 0,
+      failed: 0,
+      networkFailed: 0,
+      total,
+      checked: before.checked,
+      tagged: before.tagged,
+      empty: before.empty,
+      need: 0,
+      skipped: before.failed
+    };
   }
 
   let done = 0;
   let ok = 0;
   const failed = [];
+  const reasons = new Map();
 
   const grab = async (pid) => {
     const result = await fetchProblemTags(pid, form.cookie);
     if (result && result.ok) {
       pidTags[pid] = { tags: result.tags || [], categories: result.categories || [], checked: true };
+      return { ok: true };
+    }
+    return { ok: false, reason: (result && result.reason) || 'unknown' };
+  };
+
+  const attempt = async (pid) => {
+    const result = await grab(pid);
+    if (result.ok) {
+      ok += 1;
       return true;
     }
+    failed.push(pid);
+    reasons.set(pid, result.reason);
     return false;
   };
 
   for (const pid of need) {
-    if (await grab(pid)) ok += 1;
-    else failed.push(pid);
+    await attempt(pid);
     done += 1;
 
     // 每抓几道就落盘：中途断网或关页时，已抓到的标签不能跟着内存一起丢
@@ -1015,18 +1067,49 @@ async function syncTags(form, onProgress) {
   if (failed.length > 0) {
     const retry = [...failed];
     failed.length = 0;
+    reasons.clear();
     for (const pid of retry) {
-      if (await grab(pid)) ok += 1;
-      else failed.push(pid);
+      await attempt(pid);
       savePidTags();
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
 
+  // 网络类失败不记仇（等网络恢复后可以重抓）；「看不到这道题」「解析不出来」这类
+  // 是永久失败，记下时间跳过，否则每次分析都会卡在同几道题上，后面的步骤永远跑不到。
+  const transientReasons = new Set(['network', 'timeout', 'proxy_error', 'stale_server']);
+  let networkFailed = 0;
+  for (const pid of failed) {
+    const reason = reasons.get(pid) || 'unknown';
+    if (transientReasons.has(reason)) {
+      networkFailed += 1;
+      continue;
+    }
+    const previous = pidTags[pid] && !Array.isArray(pidTags[pid]) ? pidTags[pid] : {};
+    pidTags[pid] = {
+      ...previous,
+      tags: Array.isArray(previous.tags) ? previous.tags : [],
+      categories: Array.isArray(previous.categories) ? previous.categories : [],
+      checked: false,
+      failedAt: Date.now(),
+      failReason: reason
+    };
+  }
+
   savePidTags();
-  const checked = pids.filter((pid) => !tagNeedsFetch(pidTags[pid])).length;
-  const tagged = pids.filter((pid) => tagEntry(pid).tags.length > 0).length;
-  return { ok: true, added: ok, failed: failed.length, total, checked, tagged, empty: total - tagged, need: needTotal };
+  const after = countTagProgress(pidTags, pids);
+  return {
+    ok: true,
+    added: ok,
+    failed: failed.length,
+    networkFailed,
+    total,
+    checked: after.checked,
+    tagged: after.tagged,
+    empty: after.empty,
+    need: needTotal,
+    skipped: after.failed
+  };
 }
 
 /** 动作一：同步做题情况（只统计，不调用模型） */
@@ -1124,6 +1207,7 @@ function refreshJobButton() {
   const button = el.analyzeProfileBtn;
   if (jobRunning) {
     button.disabled = true;
+    button.textContent = '分析中…';
     return;
   }
   if (!syncedAt) {
@@ -1274,13 +1358,20 @@ async function runTagsStep(form) {
       });
 
       if (result.total === 0) return { detail: '没有需要抓标签的题目' };
-      if (result.need > 0 && result.added === 0 && result.failed >= result.need) {
-        throw new Error(`标签全部抓取失败（${result.failed} 道），可能是网络断了或 Cookie 失效`);
-      }
-      if (result.added === 0) return { done: result.checked, total: result.total, detail: '已是最新' };
 
-      const failed = result.failed > 0 ? `，${result.failed} 道失败（下次补抓）` : '';
-      return { done: result.checked, total: result.total, detail: `新抓 ${result.added} 道${failed}` };
+      // 只有「一道没抓到、手里也一条标签都没有」才算系统性故障。
+      // 其余情况（比如 421 道里 11 道抓不到）跳过坏题继续往下跑，
+      // 否则这几道永远失败，归类/模型就永远轮不到。
+      if (result.need > 0 && result.added === 0 && result.tagged === 0) {
+        throw new Error(`标签一道都没抓到（${result.failed} 道全部失败），可能是 Cookie 失效或洛谷改版`);
+      }
+
+      const parts = [];
+      if (result.added) parts.push(`新抓 ${result.added} 道`);
+      if (result.failed) parts.push(`${result.failed} 道抓不到，已跳过（12 小时后再试）`);
+      if (!result.failed && result.skipped) parts.push(`${result.skipped} 道之前抓不到，暂不重试`);
+      if (parts.length === 0) parts.push('已是最新');
+      return { done: result.checked, total: result.total, detail: parts.join('，') };
     },
     'tags'
   );
@@ -1370,19 +1461,11 @@ function failJob(error) {
   setAnalyzeStatus('分析中断', 'bad');
 }
 
-/** 完成后切到报告所在的页面并滚过去；用户正在输入时不抢焦点 */
+/** 完成后滚到数据页上的报告并高亮；不再自动切到别的页面 */
 function revealReport() {
-  const target = el.analysisReport;
+  const target = !el.dataReport || el.dataReport.hidden ? el.analysisReport : el.dataReport;
   if (!target) return;
 
-  const active = document.activeElement;
-  const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
-  if (typing) {
-    setDataStatus('分析完成 · 报告已生成（当前有输入框在用，没有自动切页）', 'ok');
-    return;
-  }
-
-  switchView('visual');
   const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   setTimeout(() => {
     target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
@@ -1415,25 +1498,57 @@ async function analyzeProfile() {
     return;
   }
 
+  // 上次没跑完的任务：接着用它的计数，已完成（done）的步骤直接跳过，
+  // 这样点「继续」不会又从抓记录开始，界面也停在真正中断的那步。
+  const saved = jobStore.loadJob();
+  const canResume = Boolean(saved && saved.status === 'failed' && !isJobComplete(saved));
+
   jobRunning = true;
   el.analyzeProfileBtn.disabled = true;
-  currentJob = createJob();
-  // 预填只影响显示，算不出来也不该挡住真正要跑的任务
-  try {
-    seedJobFromPlan(currentJob);
-  } catch {
-    /* 忽略：每步开始时会按真实数据重新算 */
+  el.analyzeProfileBtn.textContent = '分析中…';
+
+  if (canResume) {
+    currentJob = saved;
+    currentJob.status = 'running';
+    currentJob.error = '';
+    currentJob.finishedAt = 0;
+    currentJob.current = null;
+    const failedStep = currentJob.steps[saved.current];
+    if (failedStep && failedStep.status === 'failed') {
+      failedStep.status = 'pending';
+      failedStep.error = '';
+    }
+  } else {
+    currentJob = createJob();
+    // 预填只影响显示，算不出来也不该挡住真正要跑的任务
+    try {
+      seedJobFromPlan(currentJob);
+    } catch {
+      /* 忽略：每步开始时会按真实数据重新算 */
+    }
   }
+
   showJobBox(true);
   renderJob();
   saveJobSoon(true);
-  setDataStatus('开始分析：先补记录和标签，再抓代码归类，最后交给模型。中途失败可以从断点继续。', 'muted');
+  setDataStatus(
+    canResume
+      ? '从上次中断的地方继续：已完成的步骤不会重做。'
+      : '开始分析：先补记录和标签，再抓代码归类，最后交给模型。中途失败可以从断点继续。',
+    'muted'
+  );
 
   try {
-    await runRecordsStep(form);
-    await runTagsStep(form);
-    await runClassifyStep(form);
-    await runModelStep();
+    const sequence = [
+      ['records', runRecordsStep],
+      ['tags', runTagsStep],
+      ['classify', runClassifyStep],
+      ['model', runModelStep]
+    ];
+    for (const [id, run] of sequence) {
+      if (canResume && currentJob.steps[id].status === 'done') continue;
+      await run(form);
+    }
     finishJob();
   } catch (error) {
     failJob(error);
@@ -1528,6 +1643,7 @@ function restoreAnalysisState() {
   const saved = jobStore.loadReport();
   if (saved && saved.result) {
     renderReport(el.analyzeBody, saved.result);
+    showDataReport(saved.result);
     renderReportTime(saved.at);
   }
 
