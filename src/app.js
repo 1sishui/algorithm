@@ -23,7 +23,7 @@ import { normalizeRecords, summarizeSubmissions, difficultyLabel } from './impor
 import { categoriesOfTags, categoryOfTag, isNoiseTag } from './knowledge/tagCategories.js';
 import { buildCategoryStats, renderVerdict } from './ui/verdict.js';
 import { syncLuoguWithCookie, fetchRecordCode, fetchProblemTags } from './import/luoguClient.js';
-import { requestAnalysis, renderReport } from './agent/report.js';
+import { requestAnalysis, renderReport, hasReportContent } from './agent/report.js';
 import { classifyCodes } from './agent/codeTags.js';
 import { createAnalysisProgress } from './ui/analysisProgress.js';
 import {
@@ -116,7 +116,10 @@ const el = {
   jobError: $('analysis-job-error'),
   dataSteps: $('data-steps'),
   analysisReport: $('analysis-report'),
-  reportTime: $('report-time')
+  reportTime: $('report-time'),
+  dataReport: $('data-report'),
+  dataReportBody: $('data-report-body'),
+  dataReportTime: $('data-report-time')
 };
 
 /** 断点状态存 localStorage；隐私模式下拿不到也不报错，只是不能续跑 */
@@ -545,8 +548,18 @@ async function runAnalysis() {
       return response;
     }
 
+    // 模型偶尔会返回「字段都在、内容全空」的报告：直接渲染就是一块空白，
+    // 用户只会看到「分析完成」。这里当失败处理，让「继续分析」只重跑模型这一步。
+    if (!hasReportContent(response.result)) {
+      const empty = { ok: false, reason: 'empty_result', message: '模型返回了空报告' };
+      setAnalyzeStatus(analysisFailureText(empty), 'bad');
+      return empty;
+    }
+
     renderReport(el.analyzeBody, response.result);
-    // 报告存一份：刷新页面后右栏还能看到上一次的结果，而不是空白
+    // 数据页也放一份：用户是在这里点按钮的，结果就该在这里出现
+    showDataReport(response.result);
+    // 报告存一份：刷新页面后还能看到上一次的结果，而不是空白
     jobStore.saveReport({ at: Date.now(), result: response.result });
     renderReportTime(Date.now(), '报告生成');
     setAnalyzeStatus('已更新', 'ok');
@@ -562,7 +575,19 @@ function analysisFailureText(response) {
   if (reason === 'offline_file') return '离线版不连模型';
   if (reason === 'no_api_key') return '服务端没配 key';
   if (reason === 'timeout') return '模型超时';
+  if (reason === 'empty_result') return '模型返回了空报告，点「继续分析」只重跑模型这一步';
   return (response && response.message) || '分析失败';
+}
+
+/** 把报告同时放到数据页；没有内容就不显示，避免给一块空白 */
+function showDataReport(report) {
+  if (!el.dataReport || !el.dataReportBody) return;
+  if (!hasReportContent(report)) {
+    el.dataReport.hidden = true;
+    return;
+  }
+  renderReport(el.dataReportBody, report);
+  el.dataReport.hidden = false;
 }
 
 el.clearRuns.addEventListener('click', () => {
@@ -673,16 +698,20 @@ function setDataStatus(text, kind) {
 
 /** 报告时间戳：刚生成显示「报告生成 14:32」，启动时恢复显示「上次分析 11-26 09:30」 */
 function renderReportTime(at, prefix = '上次分析') {
-  if (!el.reportTime) return;
-  if (!at) {
-    el.reportTime.textContent = '';
-    return;
+  let text = '';
+  if (at) {
+    const date = new Date(at);
+    const pad = (value) => String(value).padStart(2, '0');
+    const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    text =
+      prefix === '报告生成'
+        ? `${prefix} ${time}`
+        : `${prefix} ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
   }
-  const date = new Date(at);
-  const pad = (value) => String(value).padStart(2, '0');
-  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  el.reportTime.textContent =
-    prefix === '报告生成' ? `${prefix} ${time}` : `${prefix} ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
+  // 数据页和右栏各有一份报告，时间要一起更新
+  for (const node of [el.reportTime, el.dataReportTime]) {
+    if (node) node.textContent = text;
+  }
 }
 
 if (clientId && luoguUid) {
@@ -1432,19 +1461,11 @@ function failJob(error) {
   setAnalyzeStatus('分析中断', 'bad');
 }
 
-/** 完成后切到报告所在的页面并滚过去；用户正在输入时不抢焦点 */
+/** 完成后滚到数据页上的报告并高亮；不再自动切到别的页面 */
 function revealReport() {
-  const target = el.analysisReport;
+  const target = !el.dataReport || el.dataReport.hidden ? el.analysisReport : el.dataReport;
   if (!target) return;
 
-  const active = document.activeElement;
-  const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
-  if (typing) {
-    setDataStatus('分析完成 · 报告已生成（当前有输入框在用，没有自动切页）', 'ok');
-    return;
-  }
-
-  switchView('visual');
   const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   setTimeout(() => {
     target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
@@ -1622,6 +1643,7 @@ function restoreAnalysisState() {
   const saved = jobStore.loadReport();
   if (saved && saved.result) {
     renderReport(el.analyzeBody, saved.result);
+    showDataReport(saved.result);
     renderReportTime(saved.at);
   }
 
