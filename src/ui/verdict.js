@@ -7,13 +7,21 @@
  */
 import { categoryOfTag } from '../knowledge/tagCategories.js';
 import { recommendProblems } from '../import/luoguClient.js';
+import { VERDICT_CONFIG } from '../config.js';
 
-const STRONG_RATE = 0.7;
-const WEAK_RATE = 0.4;
-const MAX_CATEGORIES = 12;
+/**
+ * 合并默认阈值与调用方覆盖项。
+ *
+ * options 存在的意义：让「改阈值 → 结果变化」这件事能被测试证明，
+ * 而不是只能手动改 config.js 再刷新页面。不传 options 时行为与抽取前完全一致。
+ */
+function resolveConfig(options = {}) {
+  return { ...VERDICT_CONFIG, ...options };
+}
 
 /** 把每道题的标签归并成大类，并统计每个大类的表现 */
-export function buildCategoryStats(submissions, pidTags, tagEntry) {
+export function buildCategoryStats(submissions, pidTags, tagEntry, options = {}) {
+  const config = resolveConfig(options);
   const problemInfo = new Map();
   for (const record of submissions) {
     if (!record.pid) continue;
@@ -60,9 +68,10 @@ export function buildCategoryStats(submissions, pidTags, tagEntry) {
       const avgAttempts = entry.problems ? entry.attempts / entry.problems : 0;
       const avgDifficulty = entry.problems ? entry.difficultySum / entry.problems : 0;
 
+      // 严进宽出：强要求两个条件同时满足，弱只需任一条件成立（详见 config.js 的注释）
       let level = '中';
-      if (rate >= STRONG_RATE && avgAttempts <= 2.2) level = '强';
-      else if (rate < WEAK_RATE || avgAttempts >= 4) level = '弱';
+      if (rate >= config.strongRate && avgAttempts <= config.strongMaxAttempts) level = '强';
+      else if (rate < config.weakRate || avgAttempts >= config.weakMinAttempts) level = '弱';
 
       const topTags = [...entry.tagCount.entries()]
         .sort((a, b) => b[1] - a[1])
@@ -93,9 +102,10 @@ function escapeHtml(str) {
  * @param {Array} stats buildCategoryStats 的结果
  * @param {Array} submissions 用来排除已做过的题
  */
-export function renderVerdict(container, stats, submissions) {
+export function renderVerdict(container, stats, submissions, options = {}) {
   if (!stats.length) return;
 
+  const config = resolveConfig(options);
   const weak = stats.filter((item) => item.level === '弱').slice(0, 4);
   const strong = stats.filter((item) => item.level === '强').slice(0, 4);
 
@@ -103,7 +113,7 @@ export function renderVerdict(container, stats, submissions) {
   section.className = 'verdict';
 
   const rows = stats
-    .slice(0, MAX_CATEGORIES)
+    .slice(0, config.maxCategories)
     .map(
       (item) => `
       <div class="verdict-row level-${item.level}">
