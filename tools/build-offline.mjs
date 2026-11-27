@@ -15,6 +15,7 @@ const OUT = path.join(root, '算法学习智能体-离线版.html');
 // 需要打包的模块清单。真正的执行顺序由下面的拓扑排序决定，
 // 不用手工维护“谁必须在谁前面”——漏排一次就会白屏，交给代码算更稳。
 const MODULES = [
+  'src/config.js',
   'src/knowledge/graph.js',
   'src/knowledge/tagCategories.js',
   'src/diagnosis/rules.js',
